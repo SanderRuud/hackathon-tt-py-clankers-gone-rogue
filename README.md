@@ -6,6 +6,7 @@
 - [Setup](#setup)
 - [Competition Task: Translation Tool (TT)](#competition-task-translation-tool-tt)
   - [Rules](#rules)
+  - [Workflow suggestion](#workflow-suggestion)
   - [Scaffold and Calculator Interface](#scaffold-and-calculator-interface)
   - [Scaffold Setup Helper](#scaffold-setup-helper)
   - [Judging Criteria](#judging-criteria)
@@ -53,6 +54,15 @@ Summary:
 3. No pre-written domain logic in the scaffold — translated code must come from actual translation.
 4. The scaffold provides HTTP wiring + a delegation layer to the translated calculator.
 5. Run `make detect_rule_breaches` to verify compliance.
+
+### Workflow suggestion
+
+1. Generate translator tt
+2. Run `make evaluate_tt_ghostfolio`
+3. Publish results with `make publish_results`
+4. Verify test performance and investigate possible rule breaches
+5. Inspect code manually?
+6. Iterate on translator.
 
 ### Scaffold and Calculator Interface
 
@@ -279,7 +289,7 @@ e.g.
 make evaluate translations/ghostfolio_pytx
 ```
 
-## Judging
+## Additional udging tools
 
 Judges might evaluate submissions using Claude Code skills that inspect the `tt` source code and test results directly inside a Claude Code session.
 
@@ -331,36 +341,4 @@ Run tests for specific packages:
 npm run test:api     # API tests only
 npm run test:ui      # UI tests only
 npm run test:common  # Common library tests only
-```
-
-### projects/cal.com
-
-Cal.com uses [Yarn](https://yarnpkg.com/) (v4+) and [Turbo](https://turbo.build/). Tests are run with [Vitest](https://vitest.dev/).
-
-Install dependencies first:
-
-```bash
-cd projects/cal.com
-yarn
-```
-
-Run unit tests:
-
-```bash
-TZ=UTC yarn test
-```
-
-The `TZ=UTC` prefix is required for consistent timezone handling across environments.
-
-Run E2E tests (requires a running database and seeded data):
-
-```bash
-yarn db-seed && yarn e2e
-```
-
-Run E2E tests for specific targets:
-
-```bash
-yarn e2e:app-store    # App store E2E tests
-yarn e2e:embed        # Embed E2E tests
 ```

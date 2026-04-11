@@ -5,7 +5,7 @@
 #
 # Usage:
 #   bash evaluate/checks/detect_rule_breaches.sh
-set -euo pipefail
+set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -21,11 +21,15 @@ for script in "$RULES_DIR"/detect_*.py; do
     continue
   fi
   echo -n "CHECK: $name ... "
-  if uv run --project "$ROOT_DIR/tt" python "$script" > /dev/null 2>&1; then
+
+  # Capture output and exit code, continue on failure
+  output=$(uv run --project "$ROOT_DIR/tt" python "$script" 2>&1) && exit_code=$? || exit_code=$?
+
+  if [ "$exit_code" -eq 0 ]; then
     echo "OK"
   else
     echo "FAIL"
-    uv run --project "$ROOT_DIR/tt" python "$script" 2>&1 | sed 's/^/  /'
+    echo "$output" | sed 's/^/  /'
     FAILURES=$((FAILURES + 1))
   fi
 done

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-evaluate/scoring/overall.py — combined overall score (50% tests, 50% code quality).
+evaluate/scoring/overall.py — combined overall score (70% tests, 30% code quality).
 
 Imports results from successfultests and codequality and prints a single
-weighted score.  Both components contribute equally (50/50).
+weighted score.  Tests contribute 70%, quality contributes 30%.
 
 Usage:
   uv run --project tt python evaluate/scoring/overall.py
@@ -47,15 +47,15 @@ def main() -> int:
 
     tests_pct = tests_result.get("percentage", 0.0)
     quality_pct = quality_result.get("weighted_score", 0.0)
-    overall = round((tests_pct + quality_pct) / 2, 2)
+    overall = round((tests_pct * 0.7 + quality_pct * 0.3), 2)
     grade = _grade(overall)
 
     print()
     print("=" * 70)
     print("  Overall Score")
     print("=" * 70)
-    print(f"  Successful tests   {tests_pct:5.1f}/100  (weight=50%)")
-    print(f"  Code quality       {quality_pct:5.1f}/100  (weight=50%)")
+    print(f"  Successful tests   {tests_pct:5.1f}/100  (weight=70%)")
+    print(f"  Code quality       {quality_pct:5.1f}/100  (weight=30%)")
     print(f"  {'─' * 40}")
     print(f"  Overall            {overall:5.1f}/100  grade={grade}")
     print("=" * 70)

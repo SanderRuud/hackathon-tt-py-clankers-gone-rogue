@@ -54,14 +54,13 @@ fair too compare them.
 
 1. The TT must **not** use LLMs for the actual translations.
 2. You **may** use LLMs to help build the TT itself.
-3. You may use the unit tests to verify correctness of the translated code.
-4. The team should add a half page to explain their architectural choices.
-5. The TT core (`tt/`) must contain **no project-specific mappings** (e.g. no hard-coded `@ghostfolio/…` import paths). Project-specific configuration belongs in `tt_import_map.json` inside the relevant scaffold directory, passed to the translator at call time.
-6. TT must not have project-specific logic which it simply copies into the translation. The translated code must be actually translated code, not pregenerated logic.
-7. You may use AST libraries in python.
-8. Your python code may not call node/js-tools or other external tools to translate the code. The translation should happen in python.
-9. The judges will have a one week period to detect cheating or other rule breaches. This might change the final winner.
-10. We expect the git commit log to reflect a gradual development of the solution, so do frequent commits.
+3. You may use the API tests to verify correctness of the translated code.
+4. TT must not have project-specific logic which it simply copies into the translation. The translated code must be actually translated code, not pregenerated logic.
+5. You may use AST libraries in python.
+6. Your python code may not call node/js-tools or other external tools to translate the code. The translation should happen in python.
+7. The judges will have a one week period to detect cheating or other rule breaches. This might change the final winner.
+8. We expect the git commit log to reflect a gradual development of the solution, so do frequent commits.
+9. The TT core (`tt/`) must contain **no project-specific mappings** (e.g. no hard-coded `@ghostfolio/…` import paths). Project-specific configuration belongs in `tt_import_map.json` inside the relevant scaffold directory, passed to the translator at call time.
 
 ## Judging process
 
