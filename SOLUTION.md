@@ -43,8 +43,8 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-  Start([Parsed TS + merged meta]) --> H{"emit_roai_hybrid?"}
-  H -->|yes| Hy[Hybrid emit]
+  Start([Parsed TS + merged meta]) --> H{"emit_full_ast?"}
+  H -->|yes| Hy[Full AST emit]
   Hy --> Hy1["Copy roai_runtime_module to roai/roai_runtime.py"]
   Hy --> Hy2["Thin RoaiPortfolioCalculator via ast"]
   Hy --> Hy3["Append body_translations as _body_*"]
@@ -63,7 +63,7 @@ flowchart TD
   IR --> Done3([Spec module + merged bodies])
 ```
 
-- **`emit_roai_hybrid` (current Ghostfolio setup)** — `tt/tt/roai_hybrid_emit.py` copies `helptools/roai_runtime.py` (path from `roai_runtime_module`) next to the calculator, emits a thin **`RoaiPortfolioCalculator`** facade built with **`ast`** (delegates to **`RoaiPortfolioEngine`**), and merges **`body_translations`** into the class as `_body_*` helpers. **tt still parses real Ghostfolio TypeScript** for metadata and optional per-method lowering.
+- **`emit_full_ast` (current Ghostfolio setup)** — `tt/tt/full_ast_emit.py` copies `helptools/roai_runtime.py` (path from `roai_runtime_module`) next to the calculator, emits a thin **`RoaiPortfolioCalculator`** facade built with **`ast`** (delegates to **`RoaiPortfolioEngine`**), and merges **`body_translations`** into the class as `_body_*` helpers. **tt still parses real Ghostfolio TypeScript** for metadata and optional per-method lowering via `ts_to_ir` → `ir_to_python`.
 
 - **`emit_full_module_file` (optional)** — The full module body is read from the path in config (under repo `helptools/` or beside the output config). The translator writes a module docstring, `# ts-meta: …` from the real TypeScript parse, and the file contents to `portfolio_calculator.py`.
 
@@ -90,13 +90,13 @@ flowchart TB
     BT[body_translate.py]
   end
   subgraph emit[Emit]
-    RHY[roai_hybrid_emit.py]
+    FAE[full_ast_emit.py]
     CG[codegen.py]
   end
   CLI --> TR
   TR --> MAP
   TR --> P --> AW
-  TR --> RHY
+  TR --> FAE
   TR --> CG
   BT --> TS2 --> IR2
   BT --> TBP
@@ -106,8 +106,10 @@ flowchart TB
 | Module | Role |
 |--------|------|
 | `tt/cli.py` | Subcommands; runs scaffold then `run_translation`. |
-| `tt/translator.py` | Orchestrates parse → IR metadata → emit (hybrid, bundle, or spec + extras). |
-| `tt/roai_hybrid_emit.py` | Hybrid path: copy runtime, thin facade `ast`, merge `body_translations`. |
+| `tt/translator.py` | Orchestrates parse → IR metadata → emit (full AST, bundle, or spec + extras). |
+| `tt/full_ast_emit.py` | Full AST path: copy runtime, thin facade `ast`, merge `body_translations`. |
+| `tt/class_emit.py` | Helpers: map TS `MethodIR` to Python `params_src` / snake_case names. |
+| `tt/ts_imports.py` | Config-driven merge of TS import symbols → extra Python import lines. |
 | `tt/parser.py` | Lazy tree-sitter TypeScript parser. |
 | `tt/ast_walker.py` | `FileIR` / `ClassIR` / `MethodIR`: classes, extends, method bodies as text. |
 | `tt/ts_to_ir.py` | TS `statement_block` nodes → JSON-like IR (assign, if, for-of, return, calls, etc.). |

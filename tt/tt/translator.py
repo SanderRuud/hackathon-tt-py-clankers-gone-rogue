@@ -10,7 +10,7 @@ from tt.body_translate import collect_body_translation_functions
 from tt.codegen import emit_from_spec
 from tt.mappings import load_config, load_project_config_module
 from tt.parser import parse_typescript
-from tt.roai_hybrid_emit import try_emit_roai_hybrid
+from tt.full_ast_emit import try_emit_full_ast
 
 
 def _read_ts(path: Path) -> bytes:
@@ -59,7 +59,7 @@ def run_translation(repo_root: Path, output_dir: Path) -> None:
     out = output_dir / rel
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    if try_emit_roai_hybrid(repo_root, output_dir, cfg, meta, files):
+    if try_emit_full_ast(repo_root, output_dir, cfg, meta, files):
         return
 
     emit_full = cfg.get("emit_full_module_file")

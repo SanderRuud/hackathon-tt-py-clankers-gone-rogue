@@ -62,6 +62,28 @@ def _stmt_for_of_row(row: dict[str, Any], x: Any) -> ast.stmt:
     )
 
 
+def _stmt_try_row(row: dict[str, Any], x: Any) -> ast.stmt:
+    tb = _stmt_list(row.get("t") or [], x)
+    cb = _stmt_list(row.get("c") or [], x)
+    if not tb:
+        tb = [ast.Pass()]
+    if not cb:
+        cb = [ast.Pass()]
+    var = str(row.get("catch_var", "e"))
+    return ast.Try(
+        body=tb,
+        handlers=[
+            ast.ExceptHandler(
+                type=ast.Name(id="Exception", ctx=ast.Load()),
+                name=var,
+                body=cb,
+            )
+        ],
+        orelse=[],
+        finalbody=[],
+    )
+
+
 def _stmt_one(row: dict[str, Any], x: Any) -> ast.stmt | None:
     k = row.get("k")
     if k == "assign":
@@ -74,6 +96,8 @@ def _stmt_one(row: dict[str, Any], x: Any) -> ast.stmt | None:
         return _stmt_if_row(row, x)
     if k == "for_of":
         return _stmt_for_of_row(row, x)
+    if k == "try":
+        return _stmt_try_row(row, x)
     if k == "continue":
         return ast.Continue()
     if k == "break":
@@ -255,6 +279,64 @@ def _ex_unary(e: dict[str, Any], cfg: Xcfg) -> ast.expr:
     return inner
 
 
+def _ex_ternary(e: dict[str, Any], cfg: Xcfg) -> ast.expr:
+    return ast.IfExp(
+        test=_py_expr(e.get("c"), cfg),
+        body=_py_expr(e.get("t"), cfg),
+        orelse=_py_expr(e.get("f"), cfg),
+    )
+
+
+def _ex_nullish(e: dict[str, Any], cfg: Xcfg) -> ast.expr:
+    """``a ?? b`` → ``b if a is None else a`` (nullish / None-coalescing)."""
+    a = _py_expr(e.get("a"), cfg)
+    b = _py_expr(e.get("b"), cfg)
+    return ast.IfExp(
+        test=ast.Compare(left=a, ops=[ast.Is()], comparators=[ast.Constant(value=None)]),
+        body=b,
+        orelse=a,
+    )
+
+
+def _ex_optional_attr(e: dict[str, Any], cfg: Xcfg) -> ast.expr:
+    """``obj?.name`` → short-circuit attribute access."""
+    base = _py_expr(e.get("o"), cfg)
+    prop = str(e.get("p", ""))
+    attr = ast.Attribute(value=base, attr=prop, ctx=ast.Load())
+    return ast.IfExp(
+        test=ast.Compare(left=base, ops=[ast.Is()], comparators=[ast.Constant(value=None)]),
+        body=ast.Constant(value=None),
+        orelse=attr,
+    )
+
+
+def _ex_optional_sub(e: dict[str, Any], cfg: Xcfg) -> ast.expr:
+    """``obj?.[i]`` → short-circuit subscript."""
+    base = _py_expr(e.get("o"), cfg)
+    idx = _py_expr(e.get("i"), cfg)
+    sub = ast.Subscript(value=base, slice=idx, ctx=ast.Load())
+    return ast.IfExp(
+        test=ast.Compare(left=base, ops=[ast.Is()], comparators=[ast.Constant(value=None)]),
+        body=ast.Constant(value=None),
+        orelse=sub,
+    )
+
+
+def _ex_map_comp(e: dict[str, Any], cfg: Xcfg) -> ast.expr:
+    """IR from ``arr.map(x => elt)``."""
+    var = str(e.get("var", "x"))
+    comp = ast.comprehension(
+        target=_nid(var),
+        iter=_py_expr(e.get("base"), cfg),
+        ifs=[],
+        is_async=0,
+    )
+    return ast.ListComp(
+        elt=_py_expr(e.get("elt"), cfg),
+        generators=[comp],
+    )
+
+
 def _ex_bin(e: dict[str, Any], cfg: Xcfg) -> ast.expr:
     op = str(e.get("op", ""))
     a = _py_expr(e.get("a"), cfg)
@@ -301,6 +383,11 @@ _EXPR: dict[str, ExprHandler] = {
     "unary": _ex_unary,
     "bin": _ex_bin,
     "raw": _ex_raw,
+    "ternary": _ex_ternary,
+    "nullish": _ex_nullish,
+    "optional_attr": _ex_optional_attr,
+    "optional_sub": _ex_optional_sub,
+    "map_comp": _ex_map_comp,
 }
 
 
