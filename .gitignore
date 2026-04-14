@@ -78,3 +78,4 @@ evaluate/scoring/results/
 **/yarn.lock
 **/package-lock.json
 .cursor/hooks/state/continual-learning.json
+launch-claude.sh
