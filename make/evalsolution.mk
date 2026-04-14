@@ -11,7 +11,7 @@
         spinup-and-test-ghostfolio_pytx \
         translate-and-test-ghostfolio_pytx evaluate_tt \
         evaluate_tt_ghostfolio evaluate_tt_example_ghostfolio \
-        scoring_codequality scoring detect_rule_breaches publish_results
+        scoring_codequality scoring detect_rule_breaches publish_results publish
 
 # Evaluate a translated project
 # Usage: make evaluate PROJECT=translations/ghostfolio_pytx
@@ -100,6 +100,7 @@ scoring:
 
 # Publish the last evaluation results (scoring + checks) to the leaderboard.
 # Requires TEAM_NAME to be set to something other than the default.
+# Usage: make publish_results   (alias: make publish)
 publish_results:
 	@if [ -z "$$TEAM_NAME" ] || [ "$$TEAM_NAME" = "TeamAlpha" ]; then \
 		echo "ERROR: TEAM_NAME is not set or is still the default 'TeamAlpha'."; \
@@ -109,6 +110,9 @@ publish_results:
 		exit 1; \
 	fi
 	uv run --project tt python evaluate/scoring/publish_scores.py --project ghostfolio
+
+# Alias for publish_results (so `make publish` works).
+publish: publish_results
 
 # Run all implementation-rule detection scripts against tt/ source.
 detect_rule_breaches:

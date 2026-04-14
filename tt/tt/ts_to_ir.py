@@ -51,18 +51,24 @@ def _var_decl_initializer(decl: Node) -> Node | None:
     return None
 
 
+def _assign_row_from_var_decl(c: Node, src: bytes) -> dict[str, Any] | None:
+    if c.type != "variable_declarator":
+        return None
+    name_n = _child_by_type(c, "identifier")
+    init = _var_decl_initializer(c)
+    if name_n is None:
+        return None
+    nm = _txt(src, name_n)
+    val = _expr(init, src) if init else {"k": "none"}
+    return {"k": "assign", "name": nm, "value": val}
+
+
 def _lexical_rows(node: Node, src: bytes) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for c in node.children:
-        if c.type != "variable_declarator":
-            continue
-        name_n = _child_by_type(c, "identifier")
-        init = _var_decl_initializer(c)
-        if name_n is None:
-            continue
-        nm = _txt(src, name_n)
-        val = _expr(init, src) if init else {"k": "none"}
-        out.append({"k": "assign", "name": nm, "value": val})
+        row = _assign_row_from_var_decl(c, src)
+        if row is not None:
+            out.append(row)
     return out
 
 
@@ -93,34 +99,43 @@ def _stmt_assign(node: Node, src: bytes) -> dict[str, Any] | None:
     return None
 
 
+def _stmt_return(node: Node, src: bytes) -> dict[str, Any]:
+    val = None
+    _ret = "ret" + "urn"
+    for c in node.children:
+        if c.type in (_ret, ";"):
+            continue
+        val = _expr(c, src)
+        break
+    return {"k": _ret, "v": val}
+
+
+def _stmt_expression_statement(node: Node, src: bytes) -> dict[str, Any] | None:
+    a = _stmt_assign(node, src)
+    if a is not None:
+        return a
+    return _stmt_expr_plain(node, src)
+
+
 def _stmt(node: Node, src: bytes) -> dict[str, Any] | None:
-    if node.type == "lexical_declaration":
+    nt = node.type
+    if nt == "lexical_declaration":
         return None
-    if node.type == "expression_statement":
-        a = _stmt_assign(node, src)
-        if a is not None:
-            return a
-        return _stmt_expr_plain(node, src)
-    if node.type == "return_statement":
-        val = None
-        _ret = "ret" + "urn"
-        for c in node.children:
-            if c.type in (_ret, ";"):
-                continue
-            val = _expr(c, src)
-            break
-        return {"k": _ret, "v": val}
-    if node.type == "if_statement":
+    if nt == "expression_statement":
+        return _stmt_expression_statement(node, src)
+    if nt == "return_statement":
+        return _stmt_return(node, src)
+    if nt == "if_statement":
         return _if_stmt(node, src)
-    if node.type == "for_statement":
+    if nt == "for_statement":
         return _for_stmt(node, src)
-    if node.type == "for_in_statement":
+    if nt == "for_in_statement":
         return _for_in_stmt(node, src)
-    if node.type == "continue_statement":
+    if nt == "continue_statement":
         return {"k": "continue"}
-    if node.type == "break_statement":
+    if nt == "break_statement":
         return {"k": "break"}
-    return {"k": "raw", "n": node.type}
+    return {"k": "raw", "n": nt}
 
 
 EXPR_TYPES = (
@@ -305,6 +320,21 @@ def _arrow_includes_on_destructured_field(
     return _match_includes_call(ex, field)
 
 
+def _filter_iter_from_arrow(
+    base: dict[str, Any], arrow: Node, src: bytes, fallback: Node
+) -> dict[str, Any]:
+    """If arrow matches a known pattern, return iter IR; else simplify *fallback* call."""
+    inc = _arrow_includes_on_destructured_field(arrow, src)
+    if inc is not None:
+        fld, vals = inc
+        return {"k": "iter_includes", "base": base, "field": fld, "values": vals}
+    ident_out = _arrow_returns_identifier(arrow, src)
+    field = _arrow_destructure_field(arrow, src)
+    if field and ident_out == field:
+        return {"k": "iter_field_truthy", "base": base, "field": field}
+    return _call_expr_no_simplify(fallback, src)
+
+
 def _maybe_simplify_filter_iter(iter_node: Node, src: bytes) -> dict[str, Any]:
     """Turn arr.filter(arrow) into iter_field_truthy when pattern matches."""
     if iter_node.type != "call_expression":
@@ -316,26 +346,14 @@ def _maybe_simplify_filter_iter(iter_node: Node, src: bytes) -> dict[str, Any]:
     if fn.type != "member_expression":
         return _call_expr_no_simplify(iter_node, src)
     prop = fn.child_by_field_name("property")
-    if prop is None:
-        return _call_expr_no_simplify(iter_node, src)
-    if _txt(src, prop) != "filter":
+    if prop is None or _txt(src, prop) != "filter":
         return _call_expr_no_simplify(iter_node, src)
     al = [a for a in args.children if a.type in EXPR_TYPES or a.type == "arrow_function"]
-    if len(al) != 1:
+    if len(al) != 1 or al[0].type != "arrow_function":
         return _call_expr_no_simplify(iter_node, src)
     arrow = al[0]
-    if arrow.type != "arrow_function":
-        return _call_expr_no_simplify(iter_node, src)
     base = _expr(fn.child_by_field_name("object"), src) if fn else {"k": "none"}
-    inc = _arrow_includes_on_destructured_field(arrow, src)
-    if inc is not None:
-        fld, vals = inc
-        return {"k": "iter_includes", "base": base, "field": fld, "values": vals}
-    ident_out = _arrow_returns_identifier(arrow, src)
-    field = _arrow_destructure_field(arrow, src)
-    if field and ident_out == field:
-        return {"k": "iter_field_truthy", "base": base, "field": field}
-    return _call_expr_no_simplify(iter_node, src)
+    return _filter_iter_from_arrow(base, arrow, src, iter_node)
 
 
 def _call_expr_no_simplify(node: Node, src: bytes) -> dict[str, Any]:
@@ -440,17 +458,24 @@ def _expr_new(node: Node, src: bytes) -> dict[str, Any]:
     return {"k": "new", "c": _expr(cons, src) if cons else {"k": "none"}, "a": alist}
 
 
+def _object_literal_pair(ch: Node, src: bytes) -> tuple[str, Any] | None:
+    if ch.type == "pair":
+        k = _child_by_type(ch, "property_identifier", "string", "identifier")
+        vv = _child_by_type(ch, *EXPR_TYPES)
+        key = _txt(src, k).strip("'\"") if k else ""
+        return (key, _expr(vv, src) if vv else {"k": "none"})
+    if ch.type == "shorthand_property_identifier":
+        key = _txt(src, ch)
+        return (key, {"k": "name", "s": key})
+    return None
+
+
 def _expr_object(node: Node, src: bytes) -> dict[str, Any]:
     pairs: list[tuple[str, Any]] = []
     for ch in node.children:
-        if ch.type == "pair":
-            k = _child_by_type(ch, "property_identifier", "string", "identifier")
-            vv = _child_by_type(ch, *EXPR_TYPES)
-            key = _txt(src, k).strip("'\"") if k else ""
-            pairs.append((key, _expr(vv, src) if vv else {"k": "none"}))
-        elif ch.type == "shorthand_property_identifier":
-            key = _txt(src, ch)
-            pairs.append((key, {"k": "name", "s": key}))
+        got = _object_literal_pair(ch, src)
+        if got is not None:
+            pairs.append(got)
     return {"k": "dict", "pairs": pairs}
 
 
