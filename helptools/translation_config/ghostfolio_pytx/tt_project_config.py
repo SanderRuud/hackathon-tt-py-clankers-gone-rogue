@@ -20,7 +20,7 @@ CONFIG: dict[str, Any] = {'typescript_sources': ['projects/ghostfolio/apps/api/s
  'body_translations': [{'typescript_method': 'getPerformanceCalculationType',
                         'python_name': '_body_get_performance_calculation_type',
                         'params_src': '(self)'}],
- 'emit_roai_hybrid': True,
+ 'emit_full_ast': True,
  'roai_runtime_module': 'helptools/roai_runtime.py',
  'emit_spec': {'module_doc': 'ROAI calculator — body from emit spec (Python config, runtime).',
                'extra_import_lines': ['from __future__ import annotations',

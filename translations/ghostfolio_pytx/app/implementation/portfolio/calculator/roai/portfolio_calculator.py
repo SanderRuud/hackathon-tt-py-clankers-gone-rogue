@@ -1,5 +1,5 @@
-"""ROAI portfolio calculator — hybrid emit (runtime copy + emitted facade + TS hooks)."""
-# ts-meta: {"class_names": ["RoaiPortfolioCalculator"], "total_method_count": 3, "file_count": 2}
+"""ROAI portfolio calculator — full AST pipeline (runtime copy + emitted facade + TS hooks)."""
+# ts-meta: {"class_names": ["RoaiPortfolioCalculator", "PortfolioCalculator"], "total_method_count": 19, "field_count": 18, "file_count": 2}
 
 from __future__ import annotations
 from typing import Any

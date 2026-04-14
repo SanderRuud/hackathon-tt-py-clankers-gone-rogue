@@ -31,6 +31,8 @@ def stmt_block_to_ir(node: Node, src: bytes) -> list[dict[str, Any]]:
 def _stmts_from_child(node: Node, src: bytes) -> list[dict[str, Any]]:
     if node.type == "lexical_declaration":
         return _lexical_rows(node, src)
+    if node.type == "try_statement":
+        return [_try_stmt(node, src)]
     row = _stmt(node, src)
     if row is None:
         return []
@@ -155,6 +157,7 @@ EXPR_TYPES = (
     "null",
     "new_expression",
     "subscript_expression",
+    "ternary_expression",
 )
 
 
@@ -183,6 +186,36 @@ def _if_stmt(node: Node, src: bytes) -> dict[str, Any]:
         elif inner_sb is not None:
             else_body = stmt_block_to_ir(inner_sb, src)
     return {"k": "if", "c": cond, "t": then_body, "e": else_body}
+
+
+def _find_catch_param(catch_clause: Node, src: bytes) -> str | None:
+    for ch in catch_clause.children:
+        if ch.type != "formal_parameters":
+            continue
+        for fp in ch.children:
+            if fp.type == "identifier":
+                return _txt(src, fp)
+    return None
+
+
+def _try_stmt(node: Node, src: bytes) -> dict[str, Any]:
+    """try { ... } catch (e) { ... } (finally / else ignored)."""
+    try_body: list[dict[str, Any]] = []
+    catch_body: list[dict[str, Any]] = []
+    catch_name = "e"
+    seen_try = False
+    for c in node.children:
+        if c.type == "try":
+            continue
+        if c.type == "catch_clause":
+            catch_name = _find_catch_param(c, src) or catch_name
+            cb = _child_by_type(c, "statement_block")
+            if cb is not None:
+                catch_body = stmt_block_to_ir(cb, src)
+        elif c.type == "statement_block" and not seen_try:
+            try_body = stmt_block_to_ir(c, src)
+            seen_try = True
+    return {"k": "try", "t": try_body, "catch_var": catch_name, "c": catch_body}
 
 
 def _for_stmt(node: Node, src: bytes) -> dict[str, Any]:
@@ -356,6 +389,46 @@ def _maybe_simplify_filter_iter(iter_node: Node, src: bytes) -> dict[str, Any]:
     return _filter_iter_from_arrow(base, arrow, src, iter_node)
 
 
+def _arrow_single_param_name(arrow: Node, src: bytes) -> str | None:
+    fp = _child_by_type(arrow, "formal_parameters")
+    if fp is None:
+        return None
+    idn = _child_by_type(fp, "identifier")
+    if idn is not None:
+        return _txt(src, idn)
+    rp = _child_by_type(fp, "required_parameter")
+    if rp is not None:
+        id2 = _child_by_type(rp, "identifier")
+        if id2 is not None:
+            return _txt(src, id2)
+    return None
+
+
+def _maybe_simplify_map_iter(iter_node: Node, src: bytes) -> dict[str, Any] | None:
+    """``arr.map(x => expr)`` → map_comp IR when ``expr`` is a single IR expression."""
+    if iter_node.type != "call_expression":
+        return None
+    fn = iter_node.child_by_field_name("function")
+    args = iter_node.child_by_field_name("arguments")
+    if fn is None or args is None:
+        return None
+    if fn.type != "member_expression":
+        return None
+    prop = fn.child_by_field_name("property")
+    if prop is None or _txt(src, prop) != "map":
+        return None
+    al = [a for a in args.children if a.type in EXPR_TYPES or a.type == "arrow_function"]
+    if len(al) != 1 or al[0].type != "arrow_function":
+        return None
+    arrow = al[0]
+    var_name = _arrow_single_param_name(arrow, src)
+    elt = _arrow_body_expr(arrow, src)
+    if var_name is None or elt is None:
+        return None
+    base = _expr(fn.child_by_field_name("object"), src) if fn else {"k": "none"}
+    return {"k": "map_comp", "base": base, "var": var_name, "elt": elt}
+
+
 def _call_expr_no_simplify(node: Node, src: bytes) -> dict[str, Any]:
     fn = node.child_by_field_name("function")
     if fn is None:
@@ -376,6 +449,9 @@ def _call_expr(node: Node, src: bytes) -> dict[str, Any]:
         "iter_includes",
     ):
         return sim
+    sim_map = _maybe_simplify_map_iter(node, src)
+    if sim_map is not None:
+        return sim_map
     return _call_expr_no_simplify(node, src)
 
 
@@ -402,6 +478,24 @@ def _expr_paren(node: Node, src: bytes) -> dict[str, Any]:
     return _expr(inner, src) if inner else {"k": "none"}
 
 
+def _expr_ternary(node: Node, src: bytes) -> dict[str, Any]:
+    """a ? b : c"""
+    parts: list[Node] = []
+    for c in node.children:
+        if c.type in ("?", ":"):
+            continue
+        if c.type in EXPR_TYPES or c.type == "ternary_expression":
+            parts.append(c)
+    if len(parts) >= 3:
+        return {
+            "k": "ternary",
+            "c": _expr(parts[0], src),
+            "t": _expr(parts[1], src),
+            "f": _expr(parts[2], src),
+        }
+    return {"k": "raw", "n": "ternary_incomplete", "t": _txt(src, node)[:80]}
+
+
 def _expr_member(node: Node, src: bytes) -> dict[str, Any]:
     obj = node.child_by_field_name("object")
     if obj is None:
@@ -424,6 +518,9 @@ def _expr_member(node: Node, src: bytes) -> dict[str, Any]:
                 break
     o = _expr(obj, src) if obj else {"k": "none"}
     p = _txt(src, prop) if prop else ""
+    has_opt = any(ch.type == "optional_chain" for ch in node.children)
+    if has_opt:
+        return {"k": "optional_attr", "o": o, "p": p}
     return {"k": "attr", "o": o, "p": p}
 
 
@@ -434,11 +531,12 @@ def _expr_this(_node: Node, _src: bytes) -> dict[str, Any]:
 def _expr_subscript(node: Node, src: bytes) -> dict[str, Any]:
     obj = node.child_by_field_name("object")
     idx = node.child_by_field_name("index")
-    return {
-        "k": "sub",
-        "o": _expr(obj, src) if obj else {"k": "none"},
-        "i": _expr(idx, src) if idx else {"k": "none"},
-    }
+    o_ir = _expr(obj, src) if obj else {"k": "none"}
+    i_ir = _expr(idx, src) if idx else {"k": "none"}
+    has_opt = any(ch.type == "optional_chain" for ch in node.children)
+    if has_opt:
+        return {"k": "optional_sub", "o": o_ir, "i": i_ir}
+    return {"k": "sub", "o": o_ir, "i": i_ir}
 
 
 def _expr_call(node: Node, src: bytes) -> dict[str, Any]:
@@ -489,11 +587,25 @@ def _expr_array(node: Node, src: bytes) -> dict[str, Any]:
 
 def _expr_binary(node: Node, src: bytes) -> dict[str, Any]:
     opn = None
+    ops = ("<", "<=", ">", ">=", "==", "===", "!=", "&&", "||", "+", "-", "*", "/", "??")
     for c in node.children:
-        if c.type in ("<", "<=", ">", ">=", "==", "===", "!=", "&&", "||", "+", "-", "*", "/"):
+        if c.type in ops:
             opn = _txt(src, c)
             break
-    kids = [c for c in node.children if c.type in EXPR_TYPES or c.type == "parenthesized_expression"]
+    kids = [
+        c
+        for c in node.children
+        if c.type in EXPR_TYPES
+        or c.type == "parenthesized_expression"
+        or c.type == "member_expression"
+        or c.type == "call_expression"
+    ]
+    if opn == "??" and len(kids) >= 2:
+        return {
+            "k": "nullish",
+            "a": _expr(kids[0], src),
+            "b": _expr(kids[1], src),
+        }
     if len(kids) >= 2:
         return {
             "k": "bin",
@@ -545,6 +657,7 @@ _EXPR_DISPATCH: dict[str, Any] = {
     "template_string": _expr_template,
     "template_literal": _expr_template,
     "arrow_function": _expr_arrow,
+    "ternary_expression": _expr_ternary,
 }
 
 
