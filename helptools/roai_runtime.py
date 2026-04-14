@@ -60,6 +60,59 @@ def _apply_fee(ledger: _Ledger, act: dict) -> None:
     ledger.total_fees += float(act.get("fee") or 0.0)
 
 
+def _apply_buy_cover_short(
+    ledger: _Ledger, st: _Sym, q: float, p: float, sym: str
+) -> float:
+    """Apply BUY against a short position; return remaining quantity to add as long."""
+    ap = abs(st.inv / st.qty) if st.qty != 0 else p
+    cover = min(q, abs(st.qty))
+    ledger.realized_pnl += cover * (ap - p)
+    st.inv += cover * ap
+    st.qty += cover
+    if abs(st.qty) < 1e-12:
+        ledger.last_short_cover_buy_cost = cover * p
+        st.qty = 0.0
+        st.inv = 0.0
+    return q - cover
+
+
+def _apply_buy(ledger: _Ledger, act: dict, sym: str, q: float, p: float) -> None:
+    st = ledger.syms.setdefault(sym, _Sym())
+    if st.qty < 0:
+        rem = _apply_buy_cover_short(ledger, st, q, p, sym)
+        if rem > 1e-12:
+            st.inv += rem * p
+            st.qty += rem
+        _apply_fee(ledger, act)
+        ledger.update_peak()
+        return
+    st.inv += q * p
+    st.qty += q
+    _apply_fee(ledger, act)
+    ledger.update_peak()
+
+
+def _apply_sell(ledger: _Ledger, act: dict, sym: str, q: float, p: float) -> None:
+    st = ledger.syms.setdefault(sym, _Sym())
+    rem = q
+    if st.qty > 0:
+        avg = st.inv / st.qty if st.qty else 0.0
+        from_long = min(rem, st.qty)
+        ledger.realized_pnl += from_long * (p - avg)
+        st.inv -= from_long * avg
+        st.qty -= from_long
+        rem -= from_long
+        if abs(st.qty) < 1e-12:
+            st.qty = 0.0
+            st.inv = 0.0
+    if rem > 1e-12:
+        st.qty -= rem
+        st.inv -= rem * p
+    _apply_fee(ledger, act)
+    if st.qty > 0:
+        ledger.update_peak()
+
+
 def _apply_one(ledger: _Ledger, act: dict) -> None:
     t = act.get("type", "")
     sym = act.get("symbol") or ""
@@ -76,49 +129,11 @@ def _apply_one(ledger: _Ledger, act: dict) -> None:
     p = float(act.get("unitPrice") or 0.0)
 
     if t == "BUY":
-        st = ledger.syms.setdefault(sym, _Sym())
-        if st.qty < 0:
-            ap = abs(st.inv / st.qty) if st.qty != 0 else p
-            cover = min(q, abs(st.qty))
-            ledger.realized_pnl += cover * (ap - p)
-            st.inv += cover * ap
-            st.qty += cover
-            if abs(st.qty) < 1e-12:
-                ledger.last_short_cover_buy_cost = cover * p
-                st.qty = 0.0
-                st.inv = 0.0
-            rem = q - cover
-            if rem > 1e-12:
-                st.inv += rem * p
-                st.qty += rem
-            _apply_fee(ledger, act)
-            ledger.update_peak()
-            return
-        st.inv += q * p
-        st.qty += q
-        _apply_fee(ledger, act)
-        ledger.update_peak()
+        _apply_buy(ledger, act, sym, q, p)
         return
 
     if t == "SELL":
-        st = ledger.syms.setdefault(sym, _Sym())
-        rem = q
-        if st.qty > 0:
-            avg = st.inv / st.qty if st.qty else 0.0
-            from_long = min(rem, st.qty)
-            ledger.realized_pnl += from_long * (p - avg)
-            st.inv -= from_long * avg
-            st.qty -= from_long
-            rem -= from_long
-            if abs(st.qty) < 1e-12:
-                st.qty = 0.0
-                st.inv = 0.0
-        if rem > 1e-12:
-            st.qty -= rem
-            st.inv -= rem * p
-        _apply_fee(ledger, act)
-        if st.qty > 0:
-            ledger.update_peak()
+        _apply_sell(ledger, act, sym, q, p)
         return
 
     _apply_fee(ledger, act)
@@ -250,35 +265,7 @@ class RoaiPortfolioEngine:
         cur = start
         chart: list[dict] = []
         while cur <= end_d:
-            ds = _fmt(cur)
-            lg_day = _replay_upto(acts, ds)
-            inv_delta = _investment_delta_on_date(acts, ds)
-            mv = _market_value(svc, lg_day, ds)
-            inv_cum = sum(
-                st.inv for st in lg_day.syms.values() if st.qty > 0
-            )
-            if _any_short(lg_day):
-                inv_cum = sum(abs(st.inv) for st in lg_day.syms.values() if st.qty < 0)
-            net_d = (
-                lg_day.realized_pnl
-                + _unrealized_at(svc, lg_day, ds)
-                - _fees_upto(acts, ds)
-            )
-            inv_denom = _cost_snapshot(lg_day)
-            if inv_denom < 1e-9 and lg_day.last_short_cover_buy_cost:
-                inv_denom = lg_day.last_short_cover_buy_cost
-            np_pct = net_d / inv_denom if inv_denom > 1e-9 else 0.0
-            entry: dict[str, Any] = {
-                "date": ds,
-                "netWorth": mv,
-                "value": mv,
-                "totalInvestment": inv_cum,
-                "netPerformanceInPercentage": np_pct,
-                "netPerformanceInPercentageWithCurrencyEffect": np_pct,
-                "netPerformance": net_d,
-                "investmentValueWithCurrencyEffect": inv_delta,
-            }
-            chart.append(entry)
+            chart.append(_chart_entry_for_day(acts, _fmt(cur), svc))
             cur += timedelta(days=1)
         return chart
 
@@ -381,17 +368,9 @@ class RoaiPortfolioEngine:
             p = float(a.get("unitPrice") or 0)
             rows.append({"date": a["date"], "investment": q * p})
         if group_by == "month":
-            acc: dict[str, float] = defaultdict(float)
-            for r in rows:
-                k = r["date"][:7] + "-01"
-                acc[k] += r["investment"]
-            rows = [{"date": k, "investment": v} for k, v in sorted(acc.items())]
+            rows = _group_amount_rows_by_month(rows)
         elif group_by == "year":
-            acc = defaultdict(float)
-            for r in rows:
-                y = r["date"][:4] + "-01-01"
-                acc[y] += r["investment"]
-            rows = [{"date": k, "investment": v} for k, v in sorted(acc.items())]
+            rows = _group_amount_rows_by_year(rows)
         return {"dividends": rows}
 
     def evaluate_report(self) -> dict:
@@ -477,6 +456,34 @@ def _fees_upto(acts: list[dict], end: str) -> float:
     return sum(float(x.get("fee") or 0) for x in acts if x.get("date", "") <= end)
 
 
+def _chart_entry_for_day(acts: list[dict], ds: str, svc: CurrentRateService) -> dict[str, Any]:
+    lg_day = _replay_upto(acts, ds)
+    inv_delta = _investment_delta_on_date(acts, ds)
+    mv = _market_value(svc, lg_day, ds)
+    inv_cum = sum(st.inv for st in lg_day.syms.values() if st.qty > 0)
+    if _any_short(lg_day):
+        inv_cum = sum(abs(st.inv) for st in lg_day.syms.values() if st.qty < 0)
+    net_d = (
+        lg_day.realized_pnl
+        + _unrealized_at(svc, lg_day, ds)
+        - _fees_upto(acts, ds)
+    )
+    inv_denom = _cost_snapshot(lg_day)
+    if inv_denom < 1e-9 and lg_day.last_short_cover_buy_cost:
+        inv_denom = lg_day.last_short_cover_buy_cost
+    np_pct = net_d / inv_denom if inv_denom > 1e-9 else 0.0
+    return {
+        "date": ds,
+        "netWorth": mv,
+        "value": mv,
+        "totalInvestment": inv_cum,
+        "netPerformanceInPercentage": np_pct,
+        "netPerformanceInPercentageWithCurrencyEffect": np_pct,
+        "netPerformance": net_d,
+        "investmentValueWithCurrencyEffect": inv_delta,
+    }
+
+
 def _investment_delta_on_date(acts: list[dict], ds: str) -> float:
     dlt = 0.0
     for a in acts:
@@ -503,6 +510,22 @@ def _investment_delta_on_date(acts: list[dict], ds: str) -> float:
 
 def _prev_day(ds: str) -> str:
     return _fmt(_d(ds) - timedelta(days=1))
+
+
+def _group_amount_rows_by_month(rows: list[dict]) -> list[dict]:
+    acc: dict[str, float] = defaultdict(float)
+    for r in rows:
+        k = r["date"][:7] + "-01"
+        acc[k] += r["investment"]
+    return [{"date": k, "investment": v} for k, v in sorted(acc.items())]
+
+
+def _group_amount_rows_by_year(rows: list[dict]) -> list[dict]:
+    acc: dict[str, float] = defaultdict(float)
+    for r in rows:
+        y = r["date"][:4] + "-01-01"
+        acc[y] += r["investment"]
+    return [{"date": k, "investment": v} for k, v in sorted(acc.items())]
 
 
 def _investment_rows(acts: list[dict], group_by: str | None) -> list[dict]:
@@ -538,15 +561,7 @@ def _investment_rows(acts: list[dict], group_by: str | None) -> list[dict]:
         merged[r["date"]] += r["investment"]
     rows = [{"date": k, "investment": v} for k, v in sorted(merged.items())]
     if group_by == "month":
-        acc: dict[str, float] = defaultdict(float)
-        for r in rows:
-            k = r["date"][:7] + "-01"
-            acc[k] += r["investment"]
-        return [{"date": k, "investment": v} for k, v in sorted(acc.items())]
+        return _group_amount_rows_by_month(rows)
     if group_by == "year":
-        accy: dict[str, float] = defaultdict(float)
-        for r in rows:
-            y = r["date"][:4] + "-01-01"
-            accy[y] += r["investment"]
-        return [{"date": k, "investment": v} for k, v in sorted(accy.items())]
+        return _group_amount_rows_by_year(rows)
     return rows

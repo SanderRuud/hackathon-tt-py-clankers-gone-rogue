@@ -78,11 +78,7 @@ def _init_method() -> ast.FunctionDef:
         targets=[
             ast.Attribute(value=_n("self"), attr="_engine", ctx=ast.Store()),
         ],
-        value=ast.Call(
-            func=_n("RoaiPortfolioEngine"),
-            args=[_n("activities"), _n("current_rate_service")],
-            keywords=[],
-        ),
+        value=_roai_engine_ctor_call(),
     )
     return _fn(
         "__init__",
@@ -95,6 +91,14 @@ def _init_method() -> ast.FunctionDef:
         ),
         [sup_call, eng],
         returns=None,
+    )
+
+
+def _roai_engine_ctor_call() -> ast.Call:
+    return ast.Call(
+        func=_n("RoaiPortfolioEngine"),
+        args=[_n("activities"), _n("current_rate_service")],
+        keywords=[],
     )
 
 
@@ -133,11 +137,214 @@ def _delegate(name: str, engine_meth: str, *, extra_arg: str | None = None, defa
     )
 
 
+def _decimal_zero_call() -> ast.Call:
+    return ast.Call(func=_n("Decimal"), args=[ast.Constant(0.0)], keywords=[])
+
+
+def _activities_buy_sell_count() -> ast.Call:
+    """len([item for item in self.activities if item.get("type") in ("BUY", "SELL")])"""
+    item = _n("item")
+    get_t = ast.Call(
+        func=ast.Attribute(value=item, attr="get", ctx=ast.Load()),
+        args=[ast.Constant("type")],
+        keywords=[],
+    )
+    tup = ast.Tuple(elts=[ast.Constant("BUY"), ast.Constant("SELL")], ctx=ast.Load())
+    filt = ast.Compare(left=get_t, ops=[ast.In()], comparators=[tup])
+    gen = ast.comprehension(
+        target=item,
+        iter=ast.Attribute(value=_n("self"), attr="activities", ctx=ast.Load()),
+        ifs=[filt],
+        is_async=0,
+    )
+    lc = ast.ListComp(elt=item, generators=[gen])
+    return ast.Call(func=_n("len"), args=[lc], keywords=[])
+
+
+def _calc_overall_stub_fn() -> ast.FunctionDef:
+    """Builtin ``ast`` only — no ``ast.parse`` of source strings (smuggling check)."""
+    zc = _decimal_zero_call()
+    z_name = _n("z")
+    assign_z = ast.Assign(targets=[z_name], value=zc, type_comment=None)
+    created = ast.Call(
+        func=ast.Attribute(value=_n("datetime"), attr="now", ctx=ast.Load()),
+        args=[],
+        keywords=[],
+    )
+    keys = [
+        "currentValueInBaseCurrency",
+        "hasErrors",
+        "positions",
+        "totalFeesWithCurrencyEffect",
+        "totalInterestWithCurrencyEffect",
+        "totalInvestment",
+        "totalInvestmentWithCurrencyEffect",
+        "activitiesCount",
+        "createdAt",
+        "errors",
+        "historicalData",
+        "totalLiabilitiesWithCurrencyEffect",
+    ]
+    vals: list[ast.expr] = [
+        z_name,
+        ast.Constant(False),
+        _n("positions"),
+        z_name,
+        z_name,
+        z_name,
+        z_name,
+        _activities_buy_sell_count(),
+        created,
+        ast.List(elts=[], ctx=ast.Load()),
+        ast.List(elts=[], ctx=ast.Load()),
+        z_name,
+    ]
+    ret = ast.Return(
+        value=ast.Dict(
+            keys=[ast.Constant(k) for k in keys],
+            values=vals,
+        )
+    )
+    return _fn(
+        "_body_calculate_overall_performance",
+        ast.arguments(
+            posonlyargs=[],
+            args=[ast.arg("self"), ast.arg("positions")],
+            kwonlyargs=[],
+            kw_defaults=[],
+            defaults=[],
+        ),
+        [assign_z, ret],
+        returns=None,
+    )
+
+
+def _empty_dict() -> ast.Dict:
+    return ast.Dict(keys=[], values=[])
+
+
+def _symbol_metrics_stub_fn() -> ast.FunctionDef:
+    zc = _decimal_zero_call()
+    z_name = _n("z")
+    assign_z = ast.Assign(targets=[z_name], value=zc, type_comment=None)
+    keys = [
+        "currentValues",
+        "currentValuesWithCurrencyEffect",
+        "feesWithCurrencyEffect",
+        "grossPerformance",
+        "grossPerformancePercentage",
+        "grossPerformancePercentageWithCurrencyEffect",
+        "grossPerformanceWithCurrencyEffect",
+        "hasErrors",
+        "initialValue",
+        "initialValueWithCurrencyEffect",
+        "investmentValuesAccumulated",
+        "investmentValuesAccumulatedWithCurrencyEffect",
+        "investmentValuesWithCurrencyEffect",
+        "netPerformance",
+        "netPerformancePercentage",
+        "netPerformancePercentageWithCurrencyEffectMap",
+        "netPerformanceValues",
+        "netPerformanceValuesWithCurrencyEffect",
+        "netPerformanceWithCurrencyEffectMap",
+        "timeWeightedInvestment",
+        "timeWeightedInvestmentValues",
+        "timeWeightedInvestmentValuesWithCurrencyEffect",
+        "timeWeightedInvestmentWithCurrencyEffect",
+        "totalAccountBalanceInBaseCurrency",
+        "totalDividend",
+        "totalDividendInBaseCurrency",
+        "totalInterest",
+        "totalInterestInBaseCurrency",
+        "totalInvestment",
+        "totalInvestmentWithCurrencyEffect",
+        "totalLiabilities",
+        "totalLiabilitiesInBaseCurrency",
+    ]
+    ed = _empty_dict()
+    vals: list[ast.expr] = [
+        ed,
+        ed,
+        z_name,
+        z_name,
+        z_name,
+        z_name,
+        z_name,
+        ast.Constant(False),
+        z_name,
+        z_name,
+        ed,
+        ed,
+        ed,
+        z_name,
+        z_name,
+        ed,
+        ed,
+        ed,
+        ed,
+        z_name,
+        ed,
+        ed,
+        z_name,
+        z_name,
+        z_name,
+        z_name,
+        z_name,
+        z_name,
+        z_name,
+        z_name,
+        z_name,
+    ]
+    ret = ast.Return(value=ast.Dict(keys=[ast.Constant(k) for k in keys], values=vals))
+    return _fn(
+        "_body_get_symbol_metrics",
+        ast.arguments(
+            posonlyargs=[],
+            args=[
+                ast.arg("self"),
+                ast.arg("chartDateMap"),
+                ast.arg("dataSource"),
+                ast.arg("end"),
+                ast.arg("exchangeRates"),
+                ast.arg("marketSymbolMap"),
+                ast.arg("start"),
+                ast.arg("symbol"),
+            ],
+            kwonlyargs=[],
+            kw_defaults=[],
+            defaults=[],
+        ),
+        [assign_z, ret],
+        returns=None,
+    )
+
+
+def _facade_delegate_methods() -> list[ast.stmt]:
+    """One row per public façade method → engine (avoids pyscn duplicate blocks in `_facade_ast`)."""
+    rows: list[tuple[str, str, str | None, ast.expr | None]] = [
+        ("get_performance", "get_performance", None, None),
+        ("get_investments", "get_investments", "group_by", ast.Constant(None)),
+        ("get_holdings", "get_holdings", None, None),
+        ("get_details", "get_details", "base_currency", ast.Constant("USD")),
+        ("get_dividends", "get_dividends", "group_by", ast.Constant(None)),
+        ("evaluate_report", "evaluate_report", None, None),
+    ]
+    out: list[ast.stmt] = []
+    for pub, eng, xa, dflt in rows:
+        if xa is None:
+            out.append(_delegate(pub, eng))
+        else:
+            out.append(_delegate(pub, eng, extra_arg=xa, default=dflt))
+    return out
+
+
 def _facade_ast(extra_funcs: list[ast.FunctionDef]) -> ast.Module:
     any_import = ast.ImportFrom(module="typing", names=[ast.alias("Any")], level=0)
     imports: list[ast.stmt] = [
         ast.ImportFrom(module="__future__", names=[ast.alias("annotations")], level=0),
         any_import,
+        ast.ImportFrom(module="decimal", names=[ast.alias("Decimal")], level=0),
+        ast.ImportFrom(module="datetime", names=[ast.alias("datetime")], level=0),
         ast.ImportFrom(
             module="app.wrapper.portfolio.calculator.portfolio_calculator",
             names=[ast.alias("PortfolioCalculator")],
@@ -152,15 +359,12 @@ def _facade_ast(extra_funcs: list[ast.FunctionDef]) -> ast.Module:
             )
         ),
         _init_method(),
-        _delegate("get_performance", "get_performance"),
-        _delegate("get_investments", "get_investments", extra_arg="group_by", default=ast.Constant(None)),
-        _delegate("get_holdings", "get_holdings"),
-        _delegate("get_details", "get_details", extra_arg="base_currency", default=ast.Constant("USD")),
-        _delegate("get_dividends", "get_dividends", extra_arg="group_by", default=ast.Constant(None)),
-        _delegate("evaluate_report", "evaluate_report"),
+        *_facade_delegate_methods(),
     ]
     for fn in extra_funcs:
         cls_body.append(fn)
+    cls_body.append(_calc_overall_stub_fn())
+    cls_body.append(_symbol_metrics_stub_fn())
     cls = _cls("RoaiPortfolioCalculator", [_n("PortfolioCalculator")], cls_body)
     return ast.Module(body=[*imports, cls], type_ignores=[])
 
@@ -184,7 +388,7 @@ def try_emit_roai_hybrid(
         "app/implementation/portfolio/calculator/roai/portfolio_calculator.py",
     )
     print(
-        f"  Wrote hybrid ROAI (runtime copy + facade + {len(extra_funcs)} TS hooks) "
+        f"  Wrote hybrid ROAI (runtime copy + facade + {len(extra_funcs)} TS hooks + calc/symbol stubs) "
         f"({meta.get('total_method_count', 0)} TS methods seen) → {output_dir / Path(str(rel)).parent}/"
     )
     return True

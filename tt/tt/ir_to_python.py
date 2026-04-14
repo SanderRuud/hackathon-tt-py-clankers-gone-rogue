@@ -23,40 +23,57 @@ def _stmt_list(
     return out
 
 
+def _stmt_assign_row(row: dict[str, Any], x: Any) -> ast.stmt:
+    py_nm = str(row.get("name", "x"))
+    return ast.Assign(targets=[_nid(py_nm)], value=_py_expr(row.get("value"), x))
+
+
+def _stmt_return_row(row: dict[str, Any], x: Any) -> ast.stmt:
+    return ast.Return(value=_py_expr(row.get("v"), x))
+
+
+def _stmt_expr_row(row: dict[str, Any], x: Any) -> ast.stmt | None:
+    ev = _py_expr(row.get("v"), x)
+    if isinstance(ev, ast.Constant) and ev.value is None:
+        return None
+    return ast.Expr(value=ev)
+
+
+def _stmt_if_row(row: dict[str, Any], x: Any) -> ast.stmt:
+    tb = _stmt_list(row.get("t") or [], x)
+    if not tb:
+        tb = [ast.Pass()]
+    return ast.If(
+        test=_py_expr(row.get("c"), x),
+        body=tb,
+        orelse=_stmt_list(row.get("e") or [], x),
+    )
+
+
+def _stmt_for_of_row(row: dict[str, Any], x: Any) -> ast.stmt:
+    fb = _stmt_list(row.get("body") or [], x)
+    if not fb:
+        fb = [ast.Pass()]
+    return ast.For(
+        target=_nid(str(row.get("var", "x"))),
+        iter=_py_expr(row.get("it"), x),
+        body=fb,
+        orelse=[],
+    )
+
+
 def _stmt_one(row: dict[str, Any], x: Any) -> ast.stmt | None:
     k = row.get("k")
     if k == "assign":
-        py_nm = str(row.get("name", "x"))
-        return ast.Assign(
-            targets=[_nid(py_nm)],
-            value=_py_expr(row.get("value"), x),
-        )
+        return _stmt_assign_row(row, x)
     if k == "return":
-        return ast.Return(value=_py_expr(row.get("v"), x))
+        return _stmt_return_row(row, x)
     if k == "expr":
-        ev = _py_expr(row.get("v"), x)
-        if isinstance(ev, ast.Constant) and ev.value is None:
-            return None
-        return ast.Expr(value=ev)
+        return _stmt_expr_row(row, x)
     if k == "if":
-        tb = _stmt_list(row.get("t") or [], x)
-        if not tb:
-            tb = [ast.Pass()]
-        return ast.If(
-            test=_py_expr(row.get("c"), x),
-            body=tb,
-            orelse=_stmt_list(row.get("e") or [], x),
-        )
+        return _stmt_if_row(row, x)
     if k == "for_of":
-        fb = _stmt_list(row.get("body") or [], x)
-        if not fb:
-            fb = [ast.Pass()]
-        return ast.For(
-            target=_nid(str(row.get("var", "x"))),
-            iter=_py_expr(row.get("it"), x),
-            body=fb,
-            orelse=[],
-        )
+        return _stmt_for_of_row(row, x)
     if k == "continue":
         return ast.Continue()
     if k == "break":
