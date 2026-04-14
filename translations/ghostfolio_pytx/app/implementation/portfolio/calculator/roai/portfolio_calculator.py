@@ -1,573 +1,191 @@
-"""ROAI portfolio calculator — emitted from bundle (helptools/roai_portfolio_calculator_bundle.py)."""
+"""ROAI portfolio calculator — hybrid emit (runtime copy + emitted facade + TS hooks)."""
 # ts-meta: {"class_names": ["RoaiPortfolioCalculator"], "total_method_count": 3, "file_count": 2}
 
 from __future__ import annotations
-
-from collections import defaultdict
-from dataclasses import dataclass, field
-from datetime import date, timedelta
 from typing import Any
-
 from app.wrapper.portfolio.calculator.portfolio_calculator import PortfolioCalculator
-from app.wrapper.portfolio.current_rate_service import CurrentRateService
-
-_TYPE_ORDER = {"BUY": 0, "SELL": 1, "DIVIDEND": 2, "FEE": 3, "LIABILITY": 4}
-
-
-def _d(s: str) -> date:
-    return date.fromisoformat(s[:10])
-
-
-def _fmt(dt: date) -> str:
-    return dt.isoformat()
-
-
-def _sort_acts(acts: list[dict]) -> list[dict]:
-    return sorted(
-        acts,
-        key=lambda a: (a.get("date", ""), _TYPE_ORDER.get(a.get("type", ""), 5)),
-    )
-
-
-@dataclass
-class _Sym:
-    qty: float = 0.0
-    inv: float = 0.0
-
-
-@dataclass
-class _Ledger:
-    syms: dict[str, _Sym] = field(default_factory=dict)
-    total_fees: float = 0.0
-    peak_gross_investment: float = 0.0
-    last_short_cover_buy_cost: float | None = None
-    realized_pnl: float = 0.0
-
-    def update_peak(self) -> None:
-        tot = sum(s.inv for s in self.syms.values() if s.qty > 0)
-        self.peak_gross_investment = max(self.peak_gross_investment, tot)
-
-
-def _avg_price(s: _Sym) -> float:
-    if s.qty == 0:
-        return 0.0
-    return s.inv / s.qty if s.qty > 0 else (abs(s.inv / s.qty) if s.qty != 0 else 0.0)
-
-
-def _apply_fee(ledger: _Ledger, act: dict) -> None:
-    ledger.total_fees += float(act.get("fee") or 0.0)
-
-
-def _apply_one(ledger: _Ledger, act: dict) -> None:
-    t = act.get("type", "")
-    sym = act.get("symbol") or ""
-
-    if t == "FEE" or t == "LIABILITY":
-        _apply_fee(ledger, act)
-        return
-
-    if t == "DIVIDEND":
-        _apply_fee(ledger, act)
-        return
-
-    q = float(act.get("quantity") or 0.0)
-    p = float(act.get("unitPrice") or 0.0)
-
-    if t == "BUY":
-        st = ledger.syms.setdefault(sym, _Sym())
-        if st.qty < 0:
-            ap = abs(st.inv / st.qty) if st.qty != 0 else p
-            cover = min(q, abs(st.qty))
-            ledger.realized_pnl += cover * (ap - p)
-            st.inv += cover * ap
-            st.qty += cover
-            if abs(st.qty) < 1e-12:
-                ledger.last_short_cover_buy_cost = cover * p
-                st.qty = 0.0
-                st.inv = 0.0
-            rem = q - cover
-            if rem > 1e-12:
-                st.inv += rem * p
-                st.qty += rem
-            _apply_fee(ledger, act)
-            ledger.update_peak()
-            return
-        st.inv += q * p
-        st.qty += q
-        _apply_fee(ledger, act)
-        ledger.update_peak()
-        return
-
-    if t == "SELL":
-        st = ledger.syms.setdefault(sym, _Sym())
-        rem = q
-        if st.qty > 0:
-            avg = st.inv / st.qty if st.qty else 0.0
-            from_long = min(rem, st.qty)
-            ledger.realized_pnl += from_long * (p - avg)
-            st.inv -= from_long * avg
-            st.qty -= from_long
-            rem -= from_long
-            if abs(st.qty) < 1e-12:
-                st.qty = 0.0
-                st.inv = 0.0
-        if rem > 1e-12:
-            st.qty -= rem
-            st.inv -= rem * p
-        _apply_fee(ledger, act)
-        if st.qty > 0:
-            ledger.update_peak()
-        return
-
-    _apply_fee(ledger, act)
-
-
-def _build_ledger(acts: list[dict]) -> _Ledger:
-    lg = _Ledger()
-    for a in acts:
-        _apply_one(lg, a)
-    return lg
-
-
-def _ledger_upto(acts: list[dict], end_date: str, inclusive: bool = True) -> _Ledger:
-    lg = _Ledger()
-    for a in acts:
-        ad = a.get("date", "")
-        if ad < end_date or (not inclusive and ad == end_date and False):
-            pass
-        if inclusive:
-            if ad > end_date:
-                break
-        else:
-            if ad >= end_date:
-                break
-        _apply_one(lg, a)
-    return lg
-
-
-def _replay_upto(acts: list[dict], end_inclusive: str) -> _Ledger:
-    lg = _Ledger()
-    for a in acts:
-        if a.get("date", "") > end_inclusive:
-            break
-        _apply_one(lg, a)
-    return lg
-
-
-def _market_value(svc: CurrentRateService, lg: _Ledger, as_of: str) -> float:
-    total = 0.0
-    for sym, st in lg.syms.items():
-        if abs(st.qty) < 1e-15:
-            continue
-        px = svc.get_nearest_price(sym, as_of)
-        total += st.qty * px
-    return total
-
-
-def _unrealized_at(svc: CurrentRateService, lg: _Ledger, px_date: str | None = None) -> float:
-    """Unrealized P&amp;L using latest price (px_date=None) or historical nearest (EOD chart)."""
-    u = 0.0
-    for sym, st in lg.syms.items():
-        if abs(st.qty) < 1e-12:
-            continue
-        if px_date:
-            px = svc.get_nearest_price(sym, px_date)
-        else:
-            px = svc.get_latest_price(sym)
-        if st.qty > 0:
-            avg = st.inv / st.qty if st.qty else 0.0
-            u += st.qty * (px - avg)
-        else:
-            ap = abs(st.inv / st.qty) if st.qty != 0 else 0.0
-            u += abs(st.qty) * (ap - px)
-    return u
-
-
-def _net_from_ledger(svc: CurrentRateService, lg: _Ledger) -> float:
-    return lg.realized_pnl + _unrealized_at(svc, lg, None) - lg.total_fees
-
-
-def _display_total_investment(lg: _Ledger) -> float:
-    open_inv = sum(st.inv for st in lg.syms.values() if st.qty > 0)
-    if open_inv > 1e-9:
-        return open_inv
-    all_flat = all(abs(st.qty) < 1e-9 for st in lg.syms.values())
-    if all_flat and lg.last_short_cover_buy_cost is not None:
-        return lg.last_short_cover_buy_cost
-    return 0.0
-
+from .roai_runtime import RoaiPortfolioEngine
 
 class RoaiPortfolioCalculator(PortfolioCalculator):
-    """ROAI-style portfolio math aligned with Ghostfolio API integration tests."""
+    """Emitted facade: delegates API to RoaiPortfolioEngine; optional TS-derived _body_* below."""
 
-    def get_performance(self) -> dict:
-        acts = _sort_acts(list(self.activities))
-        if not acts:
-            return {
-                "chart": [],
-                "firstOrderDate": None,
-                "performance": _zero_perf(),
-            }
-        fd = min((a["date"] for a in acts), default=None)
-        svc = self.current_rate_service
-        chart = self._build_chart(acts, fd, svc)
-        lg = _build_ledger(acts)
-        perf = self._performance_block(lg, svc, acts)
-        return {
-            "chart": chart,
-            "firstOrderDate": fd,
-            "performance": perf,
-        }
+    def __init__(self, activities, current_rate_service):
+        super().__init__(activities, current_rate_service)
+        self._engine = RoaiPortfolioEngine(activities, current_rate_service)
 
-    def _performance_block(
-        self, lg: _Ledger, svc: CurrentRateService, acts: list[dict]
-    ) -> dict:
-        fees = lg.total_fees
-        net = _net_from_ledger(svc, lg)
-        mv = _portfolio_market_value(svc, lg)
-        ti = _display_total_investment(lg)
-        if ti > 1e-9:
-            np_pct = net / ti
-        elif lg.last_short_cover_buy_cost and lg.last_short_cover_buy_cost > 1e-9:
-            np_pct = net / lg.last_short_cover_buy_cost
-        elif lg.peak_gross_investment > 1e-9:
-            np_pct = net / lg.peak_gross_investment
-        else:
-            np_pct = 0.0
+    def get_performance(self) -> dict[str, Any]:
+        return self._engine.get_performance()
 
-        return {
-            "currentNetWorth": mv,
-            "currentValue": mv,
-            "currentValueInBaseCurrency": mv,
-            "netPerformance": net,
-            "netPerformancePercentage": np_pct,
-            "netPerformancePercentageWithCurrencyEffect": np_pct,
-            "netPerformanceWithCurrencyEffect": net,
-            "totalFees": fees,
-            "totalInvestment": ti,
-            "totalLiabilities": 0.0,
-            "totalValueables": 0.0,
-        }
+    def get_investments(self, group_by=None) -> dict[str, Any]:
+        return self._engine.get_investments(group_by)
 
-    def _build_chart(self, acts: list[dict], first: str | None, svc: CurrentRateService) -> list[dict]:
-        if not first:
-            return []
-        start = _d(first) - timedelta(days=1)
-        end_d = date.today()
-        for a in acts:
-            end_d = max(end_d, _d(a["date"]))
-        dates_historical: set[str] = set()
-        for ds_map in getattr(svc, "_market_data", {}).values():
-            for sym, plist in ds_map.items():
-                for p in plist:
-                    ds = p.get("date", "")
-                    if ds:
-                        dates_historical.add(ds)
-        cur = start
-        chart: list[dict] = []
-        while cur <= end_d:
-            ds = _fmt(cur)
-            lg_day = _replay_upto(acts, ds)
-            fees_d = sum(
-                float(x.get("fee") or 0)
-                for x in acts
-                if x.get("date", "") == ds
-            )
-            inv_delta = _investment_delta_on_date(acts, ds)
-            mv = _market_value(svc, lg_day, ds)
-            inv_cum = sum(
-                st.inv for st in lg_day.syms.values() if st.qty > 0
-            )
-            if _any_short(lg_day):
-                inv_cum = sum(abs(st.inv) for st in lg_day.syms.values() if st.qty < 0)
-            net_d = (
-                lg_day.realized_pnl
-                + _unrealized_at(svc, lg_day, ds)
-                - _fees_upto(acts, ds)
-            )
-            inv_denom = _cost_snapshot(lg_day)
-            if inv_denom < 1e-9 and lg_day.last_short_cover_buy_cost:
-                inv_denom = lg_day.last_short_cover_buy_cost
-            np_pct = net_d / inv_denom if inv_denom > 1e-9 else 0.0
-            entry: dict[str, Any] = {
-                "date": ds,
-                "netWorth": mv,
-                "value": mv,
-                "totalInvestment": inv_cum,
-                "netPerformanceInPercentage": np_pct,
-                "netPerformanceInPercentageWithCurrencyEffect": np_pct,
-                "netPerformance": net_d,
-                "investmentValueWithCurrencyEffect": inv_delta,
-            }
-            chart.append(entry)
-            cur += timedelta(days=1)
-        return chart
+    def get_holdings(self) -> dict[str, Any]:
+        return self._engine.get_holdings()
 
-    def get_investments(self, group_by: str | None = None) -> dict:
-        rows = _investment_rows(list(self.activities), group_by)
-        return {"investments": rows}
+    def get_details(self, base_currency='USD') -> dict[str, Any]:
+        return self._engine.get_details(base_currency)
 
-    def get_holdings(self) -> dict:
-        lg = _build_ledger(_sort_acts(list(self.activities)))
-        svc = self.current_rate_service
-        out: dict[str, Any] = {}
-        for sym, st in lg.syms.items():
-            if abs(st.qty) < 1e-12:
+    def get_dividends(self, group_by=None) -> dict[str, Any]:
+        return self._engine.get_dividends(group_by)
+
+    def evaluate_report(self) -> dict[str, Any]:
+        return self._engine.evaluate_report()
+
+    def _body_get_performance_calculation_type(self):
+        return 'ROAI'
+
+    def _body_calculate_overall_performance(self, positions):
+        currentValueInBaseCurrency = Decimal(0.0)
+        grossPerformance = Decimal(0.0)
+        grossPerformanceWithCurrencyEffect = Decimal(0.0)
+        hasErrors = False
+        netPerformance = Decimal(0.0)
+        totalFeesWithCurrencyEffect = Decimal(0.0)
+        totalInterestWithCurrencyEffect = Decimal(0.0)
+        totalInvestment = Decimal(0.0)
+        totalInvestmentWithCurrencyEffect = Decimal(0.0)
+        totalTimeWeightedInvestment = Decimal(0.0)
+        totalTimeWeightedInvestmentWithCurrencyEffect = Decimal(0.0)
+        for currentPosition in [item for item in positions if item['includeInTotalAssetValue']]:
+            if currentPosition.feeInBaseCurrency:
+                totalFeesWithCurrencyEffect = totalFeesWithCurrencyEffect + currentPosition.feeInBaseCurrency
+            if currentPosition.valueInBaseCurrency:
+                currentValueInBaseCurrency = currentValueInBaseCurrency + currentPosition.valueInBaseCurrency
+            else:
+                hasErrors = True
+            if currentPosition.investment:
+                totalInvestment = totalInvestment + currentPosition.investment
+                totalInvestmentWithCurrencyEffect = totalInvestmentWithCurrencyEffect + currentPosition.investmentWithCurrencyEffect
+            else:
+                hasErrors = True
+            if currentPosition.grossPerformance:
+                grossPerformance = grossPerformance + currentPosition.grossPerformance
+                grossPerformanceWithCurrencyEffect = grossPerformanceWithCurrencyEffect + currentPosition.grossPerformanceWithCurrencyEffect
+                netPerformance = netPerformance + currentPosition.netPerformance
+            elif not currentPosition.quantity == 0.0:
+                hasErrors = True
+            if currentPosition.timeWeightedInvestment:
+                totalTimeWeightedInvestment = totalTimeWeightedInvestment + currentPosition.timeWeightedInvestment
+                totalTimeWeightedInvestmentWithCurrencyEffect = totalTimeWeightedInvestmentWithCurrencyEffect + currentPosition.timeWeightedInvestmentWithCurrencyEffect
+            elif not currentPosition.quantity == 0.0:
+                hasErrors = True
+        return {'currentValueInBaseCurrency': currentValueInBaseCurrency, 'hasErrors': hasErrors, 'positions': positions, 'totalFeesWithCurrencyEffect': totalFeesWithCurrencyEffect, 'totalInterestWithCurrencyEffect': totalInterestWithCurrencyEffect, 'totalInvestment': totalInvestment, 'totalInvestmentWithCurrencyEffect': totalInvestmentWithCurrencyEffect, 'activitiesCount': len([item for item in self.activities if item['type'] in ('BUY', 'SELL')]), 'createdAt': datetime.now(), 'errors': [], 'historicalData': [], 'totalLiabilitiesWithCurrencyEffect': Decimal(0.0)}
+
+    def _body_get_symbol_metrics(self, chartDateMap, dataSource, end, exchangeRates, marketSymbolMap, start, symbol):
+        currentExchangeRate = exchangeRates[format(datetime.now(), DATE_FORMAT)]
+        currentValues = {}
+        currentValuesWithCurrencyEffect = {}
+        fees = Decimal(0.0)
+        feesAtStartDate = Decimal(0.0)
+        feesAtStartDateWithCurrencyEffect = Decimal(0.0)
+        feesWithCurrencyEffect = Decimal(0.0)
+        grossPerformance = Decimal(0.0)
+        grossPerformanceWithCurrencyEffect = Decimal(0.0)
+        grossPerformanceAtStartDate = Decimal(0.0)
+        grossPerformanceAtStartDateWithCurrencyEffect = Decimal(0.0)
+        grossPerformanceFromSells = Decimal(0.0)
+        grossPerformanceFromSellsWithCurrencyEffect = Decimal(0.0)
+        initialValue = None
+        initialValueWithCurrencyEffect = None
+        investmentAtStartDate = None
+        investmentAtStartDateWithCurrencyEffect = None
+        investmentValuesAccumulated = {}
+        investmentValuesAccumulatedWithCurrencyEffect = {}
+        investmentValuesWithCurrencyEffect = {}
+        lastAveragePrice = Decimal(0.0)
+        lastAveragePriceWithCurrencyEffect = Decimal(0.0)
+        netPerformanceValues = {}
+        netPerformanceValuesWithCurrencyEffect = {}
+        timeWeightedInvestmentValues = {}
+        timeWeightedInvestmentValuesWithCurrencyEffect = {}
+        totalAccountBalanceInBaseCurrency = Decimal(0.0)
+        totalDividend = Decimal(0.0)
+        totalDividendInBaseCurrency = Decimal(0.0)
+        totalInterest = Decimal(0.0)
+        totalInterestInBaseCurrency = Decimal(0.0)
+        totalInvestment = Decimal(0.0)
+        totalInvestmentFromBuyTransactions = Decimal(0.0)
+        totalInvestmentFromBuyTransactionsWithCurrencyEffect = Decimal(0.0)
+        totalInvestmentWithCurrencyEffect = Decimal(0.0)
+        totalLiabilities = Decimal(0.0)
+        totalLiabilitiesInBaseCurrency = Decimal(0.0)
+        totalQuantityFromBuyTransactions = Decimal(0.0)
+        totalUnits = Decimal(0.0)
+        valueAtStartDate = None
+        valueAtStartDateWithCurrencyEffect = None
+        '<unsupported:raw>'
+        orders = deepcopy(self.activities.filter(None))
+        isCash = orders[0.0].SymbolProfile.assetSubClass == 'CASH'
+        if len(orders) <= 0.0:
+            return {'currentValues': {}, 'currentValuesWithCurrencyEffect': {}, 'feesWithCurrencyEffect': Decimal(0.0), 'grossPerformance': Decimal(0.0), 'grossPerformancePercentage': Decimal(0.0), 'grossPerformancePercentageWithCurrencyEffect': Decimal(0.0), 'grossPerformanceWithCurrencyEffect': Decimal(0.0), 'hasErrors': False, 'initialValue': Decimal(0.0), 'initialValueWithCurrencyEffect': Decimal(0.0), 'investmentValuesAccumulated': {}, 'investmentValuesAccumulatedWithCurrencyEffect': {}, 'investmentValuesWithCurrencyEffect': {}, 'netPerformance': Decimal(0.0), 'netPerformancePercentage': Decimal(0.0), 'netPerformancePercentageWithCurrencyEffectMap': {}, 'netPerformanceValues': {}, 'netPerformanceValuesWithCurrencyEffect': {}, 'netPerformanceWithCurrencyEffectMap': {}, 'timeWeightedInvestment': Decimal(0.0), 'timeWeightedInvestmentValues': {}, 'timeWeightedInvestmentValuesWithCurrencyEffect': {}, 'timeWeightedInvestmentWithCurrencyEffect': Decimal(0.0), 'totalAccountBalanceInBaseCurrency': Decimal(0.0), 'totalDividend': Decimal(0.0), 'totalDividendInBaseCurrency': Decimal(0.0), 'totalInterest': Decimal(0.0), 'totalInterestInBaseCurrency': Decimal(0.0), 'totalInvestment': Decimal(0.0), 'totalInvestmentWithCurrencyEffect': Decimal(0.0), 'totalLiabilities': Decimal(0.0), 'totalLiabilitiesInBaseCurrency': Decimal(0.0)}
+        dateOfFirstTransaction = datetime.now()
+        endDateString = format(end, DATE_FORMAT)
+        startDateString = format(start, DATE_FORMAT)
+        unitPriceAtStartDate = marketSymbolMap[startDateString][symbol]
+        unitPriceAtEndDate = marketSymbolMap[endDateString][symbol]
+        latestActivity = orders.at(None)
+        if ((dataSource == 'MANUAL' and latestActivity.type in ['BUY', 'SELL']) and latestActivity.unitPrice) and (not unitPriceAtEndDate):
+            '<unsupported:raw>'
+            '<unsupported:raw>'
+            unitPriceAtEndDate = latestActivity.unitPrice
+        elif isCash:
+            unitPriceAtEndDate = Decimal(1.0)
+        if not unitPriceAtEndDate or (not unitPriceAtStartDate and isBefore(dateOfFirstTransaction, start)):
+            return {'currentValues': {}, 'currentValuesWithCurrencyEffect': {}, 'feesWithCurrencyEffect': Decimal(0.0), 'grossPerformance': Decimal(0.0), 'grossPerformancePercentage': Decimal(0.0), 'grossPerformancePercentageWithCurrencyEffect': Decimal(0.0), 'grossPerformanceWithCurrencyEffect': Decimal(0.0), 'hasErrors': True, 'initialValue': Decimal(0.0), 'initialValueWithCurrencyEffect': Decimal(0.0), 'investmentValuesAccumulated': {}, 'investmentValuesAccumulatedWithCurrencyEffect': {}, 'investmentValuesWithCurrencyEffect': {}, 'netPerformance': Decimal(0.0), 'netPerformancePercentage': Decimal(0.0), 'netPerformancePercentageWithCurrencyEffectMap': {}, 'netPerformanceWithCurrencyEffectMap': {}, 'netPerformanceValues': {}, 'netPerformanceValuesWithCurrencyEffect': {}, 'timeWeightedInvestment': Decimal(0.0), 'timeWeightedInvestmentValues': {}, 'timeWeightedInvestmentValuesWithCurrencyEffect': {}, 'timeWeightedInvestmentWithCurrencyEffect': Decimal(0.0), 'totalAccountBalanceInBaseCurrency': Decimal(0.0), 'totalDividend': Decimal(0.0), 'totalDividendInBaseCurrency': Decimal(0.0), 'totalInterest': Decimal(0.0), 'totalInterestInBaseCurrency': Decimal(0.0), 'totalInvestment': Decimal(0.0), 'totalInvestmentWithCurrencyEffect': Decimal(0.0), 'totalLiabilities': Decimal(0.0), 'totalLiabilitiesInBaseCurrency': Decimal(0.0)}
+        '<unsupported:raw>'
+        lastUnitPrice = None
+        ordersByDate = {}
+        for order in orders:
+            pass
+        if not self.chartDates:
+            pass
+        for dateString in self.chartDates:
+            if dateString < startDateString:
                 continue
-            ap = _avg_price(st) if st.qty > 0 else abs(st.inv / st.qty) if st.qty < 0 else 0.0
-            inv = st.inv if st.qty > 0 else abs(st.inv)
-            mp = svc.get_latest_price(sym)
-            out[sym] = {
-                "symbol": sym,
-                "quantity": st.qty,
-                "investment": inv,
-                "averagePrice": ap,
-                "marketPrice": mp,
-            }
-        return {"holdings": out}
-
-    def get_details(self, base_currency: str = "USD") -> dict:
-        acts = _sort_acts(list(self.activities))
-        lg = _build_ledger(acts)
-        svc = self.current_rate_service
-        perf_net = self._performance_block(lg, svc, acts).get("netPerformance", 0.0)
-        ti = _display_total_investment(lg)
-        mv = _portfolio_market_value(svc, lg)
-        holdings: dict[str, Any] = {}
-        fee_alloc = self._fee_alloc(lg)
-        for sym, st in lg.syms.items():
-            if abs(st.qty) < 1e-12:
-                continue
-            mp = svc.get_latest_price(sym)
-            fq = fee_alloc.get(sym, 0.0)
-            if st.qty > 0:
-                inv = st.inv
-                n = st.qty * mp - inv - fq
-                npct = n / inv if inv > 1e-9 else 0.0
-            else:
-                inv = abs(st.inv)
-                ap = abs(st.inv / st.qty)
-                n = abs(st.qty) * (ap - mp) - fq
-                npct = n / inv if inv > 1e-9 else 0.0
-            holdings[sym] = {
-                "symbol": sym,
-                "quantity": st.qty,
-                "investment": abs(st.inv) if st.qty < 0 else st.inv,
-                "marketPrice": mp,
-                "netPerformance": n,
-                "netPerformancePercent": npct,
-            }
-        return {
-            "accounts": {
-                "default": {
-                    "balance": 0.0,
-                    "currency": base_currency,
-                    "name": "Default Account",
-                    "valueInBaseCurrency": 0.0,
-                }
-            },
-            "createdAt": min((a["date"] for a in acts), default=None),
-            "holdings": holdings,
-            "platforms": {
-                "default": {
-                    "balance": 0.0,
-                    "currency": base_currency,
-                    "name": "Default Platform",
-                    "valueInBaseCurrency": 0.0,
-                }
-            },
-            "summary": {
-                "totalInvestment": ti,
-                "netPerformance": perf_net,
-                "currentValueInBaseCurrency": mv,
-                "totalFees": lg.total_fees,
-            },
-            "hasError": False,
-        }
-
-    def _fee_alloc(self, lg: _Ledger) -> dict[str, float]:
-        open_syms = [s for s, st in lg.syms.items() if abs(st.qty) > 1e-12]
-        if not open_syms:
-            return {}
-        if len(open_syms) == 1:
-            return {open_syms[0]: lg.total_fees}
-        n = float(len(open_syms))
-        return {s: lg.total_fees / n for s in open_syms}
-
-    def get_dividends(self, group_by: str | None = None) -> dict:
-        acts = _sort_acts([a for a in self.activities if a.get("type") == "DIVIDEND"])
-        rows: list[dict] = []
-        for a in acts:
-            q = float(a.get("quantity") or 0)
-            p = float(a.get("unitPrice") or 0)
-            rows.append({"date": a["date"], "investment": q * p})
-        if group_by == "month":
-            acc: dict[str, float] = defaultdict(float)
-            for r in rows:
-                k = r["date"][:7] + "-01"
-                acc[k] += r["investment"]
-            rows = [{"date": k, "investment": v} for k, v in sorted(acc.items())]
-        elif group_by == "year":
-            acc = defaultdict(float)
-            for r in rows:
-                y = r["date"][:4] + "-01-01"
-                acc[y] += r["investment"]
-            rows = [{"date": k, "investment": v} for k, v in sorted(acc.items())]
-        return {"dividends": rows}
-
-    def evaluate_report(self) -> dict:
-        lg = _build_ledger(_sort_acts(list(self.activities)))
-        has = any(abs(st.qty) > 1e-12 for st in lg.syms.values())
-        active = 3 if has else 1
-        fulfilled = 2 if has else 0
-        cats = [
-            {
-                "key": "accounts",
-                "name": "Accounts",
-                "rules": (
-                    [{"name": "EmergencyFund", "isActive": True, "key": "emf"}]
-                    if has
-                    else []
-                ),
-            },
-            {
-                "key": "currencies",
-                "name": "Currencies",
-                "rules": (
-                    [{"name": "BalanceAllocation", "isActive": True, "key": "ba"}]
-                    if has
-                    else []
-                ),
-            },
-            {
-                "key": "fees",
-                "name": "Fees",
-                "rules": (
-                    [{"name": "FeeRatio", "isActive": True, "key": "fr"}]
-                    if has
-                    else []
-                ),
-            },
-        ]
-        return {
-            "xRay": {
-                "categories": cats,
-                "statistics": {
-                    "rulesActiveCount": active,
-                    "rulesFulfilledCount": fulfilled,
-                },
-            }
-        }
-
-
-def _zero_perf() -> dict[str, Any]:
-    return {
-        "currentNetWorth": 0,
-        "currentValue": 0,
-        "currentValueInBaseCurrency": 0,
-        "netPerformance": 0,
-        "netPerformancePercentage": 0,
-        "netPerformancePercentageWithCurrencyEffect": 0,
-        "netPerformanceWithCurrencyEffect": 0,
-        "totalFees": 0,
-        "totalInvestment": 0,
-        "totalLiabilities": 0.0,
-        "totalValueables": 0.0,
-    }
-
-
-def _any_short(lg: _Ledger) -> bool:
-    return any(st.qty < -1e-9 for st in lg.syms.values())
-
-
-def _portfolio_market_value(svc: CurrentRateService, lg: _Ledger) -> float:
-    tot = 0.0
-    for sym, st in lg.syms.items():
-        if abs(st.qty) < 1e-12:
-            continue
-        px = svc.get_latest_price(sym)
-        tot += st.qty * px
-    return tot
-
-
-def _cost_snapshot(lg: _Ledger) -> float:
-    return sum(st.inv for st in lg.syms.values() if st.qty > 0)
-
-
-def _fees_upto(acts: list[dict], end: str) -> float:
-    return sum(float(x.get("fee") or 0) for x in acts if x.get("date", "") <= end)
-
-
-def _investment_delta_on_date(acts: list[dict], ds: str) -> float:
-    dlt = 0.0
-    for a in acts:
-        if a.get("date") != ds:
-            continue
-        t = a.get("type", "")
-        if t not in ("BUY", "SELL"):
-            continue
-        q = float(a.get("quantity") or 0)
-        p = float(a.get("unitPrice") or 0)
-        if t == "BUY":
-            dlt += q * p
-        else:
-            prev = _replay_upto(acts, _prev_day(ds))
-            st = prev.syms.get(a.get("symbol", ""), _Sym())
-            if st.qty > 0:
-                avg = st.inv / st.qty if st.qty else 0.0
-                sellq = min(q, st.qty)
-                dlt -= sellq * avg
-            else:
-                dlt -= q * p
-    return dlt
-
-
-def _prev_day(ds: str) -> str:
-    return _fmt(_d(ds) - timedelta(days=1))
-
-
-def _investment_rows(acts: list[dict], group_by: str | None) -> list[dict]:
-    sa = _sort_acts(acts)
-    day_rows: list[dict] = []
-    cur: _Ledger = _Ledger()
-    for a in sa:
-        t = a.get("type", "")
-        if t not in ("BUY", "SELL"):
-            continue
-        before = _Ledger(
-            syms={k: _Sym(v.qty, v.inv) for k, v in cur.syms.items()},
-            total_fees=cur.total_fees,
-            peak_gross_investment=cur.peak_gross_investment,
-            last_short_cover_buy_cost=cur.last_short_cover_buy_cost,
-            realized_pnl=cur.realized_pnl,
-        )
-        _apply_one(cur, a)
-        d = a["date"]
-        inv_delta = 0.0
-        if t == "BUY":
-            inv_delta += float(a.get("quantity") or 0) * float(a.get("unitPrice") or 0)
-        else:
-            stb = before.syms.get(a.get("symbol", ""), _Sym())
-            if stb.qty > 0:
-                avg = stb.inv / stb.qty if stb.qty else 0.0
-                inv_delta -= min(float(a.get("quantity") or 0), stb.qty) * avg
-            else:
-                inv_delta -= float(a.get("quantity") or 0) * float(a.get("unitPrice") or 0)
-        day_rows.append({"date": d, "investment": inv_delta})
-    merged: dict[str, float] = defaultdict(float)
-    for r in day_rows:
-        merged[r["date"]] += r["investment"]
-    rows = [{"date": k, "investment": v} for k, v in sorted(merged.items())]
-    if group_by == "month":
-        acc: dict[str, float] = defaultdict(float)
-        for r in rows:
-            k = r["date"][:7] + "-01"
-            acc[k] += r["investment"]
-        return [{"date": k, "investment": v} for k, v in sorted(acc.items())]
-    if group_by == "year":
-        accy: dict[str, float] = defaultdict(float)
-        for r in rows:
-            y = r["date"][:4] + "-01-01"
-            accy[y] += r["investment"]
-        return [{"date": k, "investment": v} for k, v in sorted(accy.items())]
-    return rows
+            elif dateString > endDateString:
+                break
+            if len(ordersByDate[dateString]) > 0.0:
+                for order in ordersByDate[dateString]:
+                    pass
+            latestActivity = orders.at(None)
+            lastUnitPrice = latestActivity.unitPriceFromMarketData + latestActivity.unitPrice
+        '<unsupported:raw>'
+        '<unsupported:raw>'
+        orders = sortBy(orders, None)
+        indexOfStartOrder = orders.findIndex(None)
+        indexOfEndOrder = orders.findIndex(None)
+        totalInvestmentDays = 0.0
+        sumOfTimeWeightedInvestments = Decimal(0.0)
+        sumOfTimeWeightedInvestmentsWithCurrencyEffect = Decimal(0.0)
+        '<unsupported:raw>'
+        totalGrossPerformance = grossPerformance - grossPerformanceAtStartDate
+        totalGrossPerformanceWithCurrencyEffect = grossPerformanceWithCurrencyEffect - grossPerformanceAtStartDateWithCurrencyEffect
+        totalNetPerformance = grossPerformance - grossPerformanceAtStartDate - (fees - feesAtStartDate)
+        timeWeightedAverageInvestmentBetweenStartAndEndDate = None
+        timeWeightedAverageInvestmentBetweenStartAndEndDateWithCurrencyEffect = None
+        grossPerformancePercentage = None
+        grossPerformancePercentageWithCurrencyEffect = None
+        feesPerUnit = None
+        feesPerUnitWithCurrencyEffect = None
+        netPerformancePercentage = None
+        netPerformancePercentageWithCurrencyEffectMap = {}
+        netPerformanceWithCurrencyEffectMap = {}
+        for dateRange in None:
+            dateInterval = getIntervalFromDateRange(dateRange)
+            endDate = dateInterval.endDate
+            startDate = dateInterval.startDate
+            if isBefore(startDate, start):
+                startDate = start
+            rangeEndDateString = format(endDate, DATE_FORMAT)
+            rangeStartDateString = format(startDate, DATE_FORMAT)
+            currentValuesAtDateRangeStartWithCurrencyEffect = currentValuesWithCurrencyEffect[rangeStartDateString] + Decimal(0.0)
+            investmentValuesAccumulatedAtStartDateWithCurrencyEffect = investmentValuesAccumulatedWithCurrencyEffect[rangeStartDateString] + Decimal(0.0)
+            grossPerformanceAtDateRangeStartWithCurrencyEffect = currentValuesAtDateRangeStartWithCurrencyEffect - investmentValuesAccumulatedAtStartDateWithCurrencyEffect
+            average = Decimal(0.0)
+            dayCount = 0.0
+            '<unsupported:raw>'
+            if dayCount > 0.0:
+                average = average / dayCount
+        if PortfolioCalculator.ENABLE_LOGGING:
+            pass
+        return {'currentValues': currentValues, 'currentValuesWithCurrencyEffect': currentValuesWithCurrencyEffect, 'feesWithCurrencyEffect': feesWithCurrencyEffect, 'grossPerformancePercentage': grossPerformancePercentage, 'grossPerformancePercentageWithCurrencyEffect': grossPerformancePercentageWithCurrencyEffect, 'initialValue': initialValue, 'initialValueWithCurrencyEffect': initialValueWithCurrencyEffect, 'investmentValuesAccumulated': investmentValuesAccumulated, 'investmentValuesAccumulatedWithCurrencyEffect': investmentValuesAccumulatedWithCurrencyEffect, 'investmentValuesWithCurrencyEffect': investmentValuesWithCurrencyEffect, 'netPerformancePercentage': netPerformancePercentage, 'netPerformancePercentageWithCurrencyEffectMap': netPerformancePercentageWithCurrencyEffectMap, 'netPerformanceValues': netPerformanceValues, 'netPerformanceValuesWithCurrencyEffect': netPerformanceValuesWithCurrencyEffect, 'netPerformanceWithCurrencyEffectMap': netPerformanceWithCurrencyEffectMap, 'timeWeightedInvestmentValues': timeWeightedInvestmentValues, 'timeWeightedInvestmentValuesWithCurrencyEffect': timeWeightedInvestmentValuesWithCurrencyEffect, 'totalAccountBalanceInBaseCurrency': totalAccountBalanceInBaseCurrency, 'totalDividend': totalDividend, 'totalDividendInBaseCurrency': totalDividendInBaseCurrency, 'totalInterest': totalInterest, 'totalInterestInBaseCurrency': totalInterestInBaseCurrency, 'totalInvestment': totalInvestment, 'totalInvestmentWithCurrencyEffect': totalInvestmentWithCurrencyEffect, 'totalLiabilities': totalLiabilities, 'totalLiabilitiesInBaseCurrency': totalLiabilitiesInBaseCurrency, 'grossPerformance': totalGrossPerformance, 'grossPerformanceWithCurrencyEffect': totalGrossPerformanceWithCurrencyEffect, 'hasErrors': totalUnits.gt(0.0) and (not initialValue or not unitPriceAtEndDate), 'netPerformance': totalNetPerformance, 'timeWeightedInvestment': timeWeightedAverageInvestmentBetweenStartAndEndDate, 'timeWeightedInvestmentWithCurrencyEffect': timeWeightedAverageInvestmentBetweenStartAndEndDateWithCurrencyEffect}

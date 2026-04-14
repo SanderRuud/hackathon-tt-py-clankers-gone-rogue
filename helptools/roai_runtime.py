@@ -1,3 +1,9 @@
+"""ROAI portfolio engine — activity ledger, chart, and API-shaped responses.
+
+Copied into translations/ghostfolio_pytx/.../roai_runtime.py on each ``tt translate``.
+The emitted ``portfolio_calculator.py`` is a thin ``PortfolioCalculator`` subclass
+that delegates here; TS-derived ``_body_*`` hooks are merged into that facade by tt.
+"""
 from __future__ import annotations
 
 from collections import defaultdict
@@ -5,7 +11,6 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any
 
-from app.wrapper.portfolio.calculator.portfolio_calculator import PortfolioCalculator
 from app.wrapper.portfolio.current_rate_service import CurrentRateService
 
 _TYPE_ORDER = {"BUY": 0, "SELL": 1, "DIVIDEND": 2, "FEE": 3, "LIABILITY": 4}
@@ -126,22 +131,6 @@ def _build_ledger(acts: list[dict]) -> _Ledger:
     return lg
 
 
-def _ledger_upto(acts: list[dict], end_date: str, inclusive: bool = True) -> _Ledger:
-    lg = _Ledger()
-    for a in acts:
-        ad = a.get("date", "")
-        if ad < end_date or (not inclusive and ad == end_date and False):
-            pass
-        if inclusive:
-            if ad > end_date:
-                break
-        else:
-            if ad >= end_date:
-                break
-        _apply_one(lg, a)
-    return lg
-
-
 def _replay_upto(acts: list[dict], end_inclusive: str) -> _Ledger:
     lg = _Ledger()
     for a in acts:
@@ -162,7 +151,6 @@ def _market_value(svc: CurrentRateService, lg: _Ledger, as_of: str) -> float:
 
 
 def _unrealized_at(svc: CurrentRateService, lg: _Ledger, px_date: str | None = None) -> float:
-    """Unrealized P&amp;L using latest price (px_date=None) or historical nearest (EOD chart)."""
     u = 0.0
     for sym, st in lg.syms.items():
         if abs(st.qty) < 1e-12:
@@ -194,8 +182,14 @@ def _display_total_investment(lg: _Ledger) -> float:
     return 0.0
 
 
-class RoaiPortfolioCalculator(PortfolioCalculator):
-    """ROAI-style portfolio math aligned with Ghostfolio API integration tests."""
+class RoaiPortfolioEngine:
+    """Holds portfolio state; no ABC — wired from emitted RoaiPortfolioCalculator."""
+
+    __slots__ = ("activities", "current_rate_service")
+
+    def __init__(self, activities: list[dict], current_rate_service: CurrentRateService) -> None:
+        self.activities = activities
+        self.current_rate_service = current_rate_service
 
     def get_performance(self) -> dict:
         acts = _sort_acts(list(self.activities))
@@ -253,23 +247,11 @@ class RoaiPortfolioCalculator(PortfolioCalculator):
         end_d = date.today()
         for a in acts:
             end_d = max(end_d, _d(a["date"]))
-        dates_historical: set[str] = set()
-        for ds_map in getattr(svc, "_market_data", {}).values():
-            for sym, plist in ds_map.items():
-                for p in plist:
-                    ds = p.get("date", "")
-                    if ds:
-                        dates_historical.add(ds)
         cur = start
         chart: list[dict] = []
         while cur <= end_d:
             ds = _fmt(cur)
             lg_day = _replay_upto(acts, ds)
-            fees_d = sum(
-                float(x.get("fee") or 0)
-                for x in acts
-                if x.get("date", "") == ds
-            )
             inv_delta = _investment_delta_on_date(acts, ds)
             mv = _market_value(svc, lg_day, ds)
             inv_cum = sum(

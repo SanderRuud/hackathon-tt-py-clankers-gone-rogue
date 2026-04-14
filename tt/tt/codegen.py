@@ -1,7 +1,8 @@
-"""Emit implementation source using ast + runtime JSON spec (no domain strings in this file)."""
+"""Emit implementation source using ast + declarative emit spec (no domain strings in this file)."""
 from __future__ import annotations
 
 import ast
+import importlib.util
 import json
 from pathlib import Path
 from typing import Any, Callable
@@ -247,15 +248,36 @@ def _body_import_lines(cfg: dict[str, Any], extra_funcs: list[ast.FunctionDef]) 
     return out
 
 
-def emit_from_spec_files(
-    cfg_path: Path,
+def _resolve_emit_spec(cfg: dict[str, Any], config_dir: Path) -> dict[str, Any]:
+    """Inline ``emit_spec`` dict, or load from sibling ``.py`` (``EMIT_SPEC``) or ``.json`` file."""
+    inline = cfg.get("emit_spec")
+    if isinstance(inline, dict):
+        return inline
+    rel = cfg.get("emit_spec_file", "calculator_emit.json")
+    path = config_dir / str(rel)
+    if not path.is_file():
+        raise FileNotFoundError(f"emit spec not found: {path} (set emit_spec on CONFIG or emit_spec_file)")
+    if path.suffix.lower() == ".py":
+        spec_m = importlib.util.spec_from_file_location("_tt_emit_spec", path)
+        if spec_m is None or spec_m.loader is None:
+            raise ImportError(f"Cannot load emit spec module: {path}")
+        mod = importlib.util.module_from_spec(spec_m)
+        spec_m.loader.exec_module(mod)
+        em = getattr(mod, "EMIT_SPEC", None)
+        if not isinstance(em, dict):
+            raise ValueError(f"{path} must define EMIT_SPEC: dict[str, Any] = {{...}}")
+        return em
+    return _load_json(path)
+
+
+def emit_from_spec(
+    cfg: dict[str, Any],
+    config_dir: Path,
     meta: dict[str, Any],
     extra_funcs: list[ast.FunctionDef] | None = None,
 ) -> str:
-    """Load JSON spec path from tt_import_map next to cfg_path."""
-    cfg = _load_json(cfg_path)
-    rel = cfg.get("emit_spec_file", "calculator_emit.json")
-    spec = _load_json(cfg_path.parent / rel)
+    """Build module source from CONFIG ``emit_spec`` (or external spec file next to config)."""
+    spec = _resolve_emit_spec(cfg, config_dir)
     xf = extra_funcs or []
     lines = [f'"""{spec.get("module_doc", "")}"""', ""]
     for ln in spec.get("extra_import_lines", []):

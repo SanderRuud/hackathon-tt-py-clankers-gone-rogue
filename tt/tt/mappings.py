@@ -1,6 +1,7 @@
-"""Load per-project translation config from JSON; apply generic transforms."""
+"""Load per-project translation config; apply generic transforms."""
 from __future__ import annotations
 
+import importlib.util
 import json
 import re
 from pathlib import Path
@@ -8,8 +9,21 @@ from typing import Any
 
 
 def load_config(path: Path) -> dict[str, Any]:
-    """Parse tt_import_map.json (or any project config file)."""
+    """Parse legacy ``tt_import_map.json`` (JSON). Prefer :func:`load_project_config_module`."""
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def load_project_config_module(path: Path) -> dict[str, Any]:
+    """Load ``CONFIG`` dict from ``tt_project_config.py`` (per-project, outside ``tt/tt``)."""
+    spec = importlib.util.spec_from_file_location("_tt_project_config", path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot load config module: {path}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    cfg = getattr(mod, "CONFIG", None)
+    if not isinstance(cfg, dict):
+        raise ValueError(f"{path} must define CONFIG: dict[str, Any] = {{...}}")
+    return cfg
 
 
 def apply_text_rules(text: str, rules: list[dict[str, Any]]) -> str:

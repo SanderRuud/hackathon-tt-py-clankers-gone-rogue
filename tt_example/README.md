@@ -36,5 +36,5 @@ The translated code must implement `RoaiPortfolioCalculator.get_symbol_metrics()
 |---------|-----------|-----------|
 | Scaffold setup | Yes | Yes |
 | TypeScript parsing | No | Regex-based passes |
-| Import mapping | No | Via `tt_import_map.json` |
+| Import mapping | No | Via `helptools/translation_config/…/tt_project_config.py` (`CONFIG`) |
 | Tests passing | ~30 (stubs only) | ~54 (with translated calculator) |

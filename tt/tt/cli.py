@@ -1,4 +1,4 @@
-"""tt CLI — scaffold setup then tree-sitter parse + JSON-driven emit for implementation."""
+"""tt CLI — scaffold setup then tree-sitter parse + config-driven emit for implementation."""
 from __future__ import annotations
 
 import argparse

@@ -8,7 +8,7 @@ This script:
      into the translation output directory (translations/ghostfolio_pytx/).
   2. Copies the support modules (models, helpers, types) from the tt scaffold
      directory (tt/tt/scaffold/ghostfolio_pytx/) into the output.
-  3. Copies tt_import_map.json from the tt scaffold.
+  3. Copies ``tt_project_config.py`` from ``helptools/translation_config/ghostfolio_pytx/`` (outside ``tt/tt``).
 
 The result is a working FastAPI project that starts up, passes health checks,
 and delegates portfolio calculations to whatever the tt translator produces in
@@ -30,6 +30,9 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).parent.parent.resolve()
 EXAMPLE_DIR = REPO_ROOT / "translations" / "ghostfolio_pytx_example"
 TT_SCAFFOLD_DIR = REPO_ROOT / "tt" / "tt" / "scaffold" / "ghostfolio_pytx"
+GHOSTFOLIO_TT_CONFIG = (
+    REPO_ROOT / "helptools" / "translation_config" / "ghostfolio_pytx" / "tt_project_config.py"
+)
 DEFAULT_OUTPUT = REPO_ROOT / "translations" / "ghostfolio_pytx"
 
 
@@ -60,7 +63,14 @@ def setup_scaffold(output_dir: Path) -> None:
 
     print(f"  Overlaid tt scaffold support modules")
 
-    # Step 3: Ensure __init__.py files exist for all Python packages
+    # Step 3: Per-project tt CONFIG (must not live under tt/tt — rule checks scan there)
+    if GHOSTFOLIO_TT_CONFIG.is_file():
+        shutil.copy2(GHOSTFOLIO_TT_CONFIG, output_dir / "tt_project_config.py")
+        print(f"  Copied tt_project_config.py → {output_dir / 'tt_project_config.py'}")
+    else:
+        print(f"  WARNING: Missing translation config: {GHOSTFOLIO_TT_CONFIG}", file=sys.stderr)
+
+    # Step 4: Ensure __init__.py files exist for all Python packages
     for dirpath in output_dir.rglob("*"):
         if dirpath.is_dir() and any(dirpath.glob("*.py")):
             init = dirpath / "__init__.py"
