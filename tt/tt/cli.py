@@ -1,12 +1,4 @@
-"""
-Minimal translation tool implementation.
-
-This implementation sets up the scaffold and copies the implementation code
-from translations/ghostfolio_pytx_example/ to provide a complete working
-translation without any actual TypeScript-to-Python conversion logic.
-
-This allows the translated version to pass all tests that the example passes.
-"""
+"""tt CLI — scaffold setup then tree-sitter parse + config-driven emit for implementation."""
 from __future__ import annotations
 
 import argparse
