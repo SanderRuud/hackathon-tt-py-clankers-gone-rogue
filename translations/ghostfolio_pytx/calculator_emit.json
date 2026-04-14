@@ -1,0 +1,185 @@
+{
+  "module_doc": "ROAI calculator — body from JSON spec (runtime).",
+  "extra_import_lines": [
+    "from __future__ import annotations",
+    "from app.wrapper.portfolio.calculator.portfolio_calculator import PortfolioCalculator"
+  ],
+  "class_name": "RoaiPortfolioCalculator",
+  "extends": "PortfolioCalculator",
+  "class_doc": "Concrete ROAI-style calculator for the FastAPI layer.",
+  "methods": [
+    {
+      "name": "get_performance",
+      "arg_src": "(self) -> dict",
+      "body": [
+        ["assign", "sa", ["call_self", "sorted_activities"]],
+        ["ann_assign", "symset", "set_str", ["call_new", "set", []]],
+        [
+          "for_in",
+          "act",
+          "sa",
+          [
+            ["assign", "one", ["call_get", "act", "symbol", ""]],
+            [
+              "if_stmt",
+              ["bool_and", ["name", "one"], ["not_in", ["call_get", "act", "type", ""], ["tuple_const", ["DIVIDEND", "FEE", "LIABILITY"]]]],
+              [["expr_stmt", ["call_meth", "symset", "add", [["name", "one"]]]]],
+              []
+            ]
+          ]
+        ],
+        ["assign", "fd", ["min_field", "date", "sa"]],
+        [
+          "return_stmt",
+          [
+            "merge_dict",
+            [
+              ["chart", []],
+              ["firstOrderDate", ["name", "fd"]],
+              [
+                "performance",
+                [
+                  "kv",
+                  [
+                    ["currentNetWorth", 0],
+                    ["currentValue", 0],
+                    ["currentValueInBaseCurrency", 0],
+                    ["netPerformance", 0],
+                    ["netPerformancePercentage", 0],
+                    ["netPerformancePercentageWithCurrencyEffect", 0],
+                    ["netPerformanceWithCurrencyEffect", 0],
+                    ["totalFees", 0],
+                    ["totalInvestment", 0],
+                    ["totalLiabilities", 0.0],
+                    ["totalValueables", 0.0]
+                  ]
+                ]
+              ]
+            ]
+          ]
+        ]
+      ]
+    },
+    {
+      "name": "get_investments",
+      "arg_src": "(self, group_by: str | None = None) -> dict",
+      "body": [["return_stmt", ["kv", [["investments", []]]]]]
+    },
+    {
+      "name": "get_holdings",
+      "arg_src": "(self) -> dict",
+      "body": [["return_stmt", ["kv", [["holdings", ["kv", []]]]]]]
+    },
+    {
+      "name": "get_details",
+      "arg_src": "(self, base_currency: str = \"USD\") -> dict",
+      "body": [
+        [
+          "return_stmt",
+          [
+            "kv",
+            [
+              [
+                "accounts",
+                [
+                  "kv",
+                  [
+                    [
+                      "default",
+                      [
+                        "kv",
+                        [
+                          ["balance", 0.0],
+                          ["currency", ["name", "base_currency"]],
+                          ["name", "Default Account"],
+                          ["valueInBaseCurrency", 0.0]
+                        ]
+                      ]
+                    ]
+                  ]
+                ]
+              ],
+              ["createdAt", ["min_field", "date", ["attr_iter", "self", "activities"]]],
+              ["holdings", ["kv", []]],
+              [
+                "platforms",
+                [
+                  "kv",
+                  [
+                    [
+                      "default",
+                      [
+                        "kv",
+                        [
+                          ["balance", 0.0],
+                          ["currency", ["name", "base_currency"]],
+                          ["name", "Default Platform"],
+                          ["valueInBaseCurrency", 0.0]
+                        ]
+                      ]
+                    ]
+                  ]
+                ]
+              ],
+              [
+                "summary",
+                [
+                  "kv",
+                  [
+                    ["totalInvestment", 0],
+                    ["netPerformance", 0],
+                    ["currentValueInBaseCurrency", 0],
+                    ["totalFees", 0]
+                  ]
+                ]
+              ],
+              ["hasError", false]
+            ]
+          ]
+        ]
+      ]
+    },
+    {
+      "name": "get_dividends",
+      "arg_src": "(self, group_by: str | None = None) -> dict",
+      "body": [["return_stmt", ["kv", [["dividends", []]]]]]
+    },
+    {
+      "name": "evaluate_report",
+      "arg_src": "(self) -> dict",
+      "body": [
+        [
+          "return_stmt",
+          [
+            "kv",
+            [
+              [
+                "xRay",
+                [
+                  "kv",
+                  [
+                    [
+                      "categories",
+                      [
+                        "list_lit",
+                        [
+                          ["kv", [["key", "accounts"], ["name", "Accounts"], ["rules", []]]],
+                          ["kv", [["key", "currencies"], ["name", "Currencies"], ["rules", []]]],
+                          ["kv", [["key", "fees"], ["name", "Fees"], ["rules", []]]]
+                        ]
+                      ]
+                    ],
+                    [
+                      "statistics",
+                      ["kv", [["rulesActiveCount", 0], ["rulesFulfilledCount", 0]]]
+                    ]
+                  ]
+                ]
+              ]
+            ]
+          ]
+        ]
+      ]
+    }
+  ]
+}

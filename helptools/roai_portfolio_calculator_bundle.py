@@ -1,6 +1,3 @@
-"""ROAI portfolio calculator — emitted from bundle (helptools/roai_portfolio_calculator_bundle.py)."""
-# ts-meta: {"class_names": ["RoaiPortfolioCalculator"], "total_method_count": 3, "file_count": 2}
-
 from __future__ import annotations
 
 from collections import defaultdict

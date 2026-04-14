@@ -1,153 +1,68 @@
-"""
-Minimal TypeScript to Python translator.
-
-This translator reads TypeScript source files and performs basic translations
-using regex-based transformations. It's a simple but lawful implementation that
-actually converts TypeScript code patterns to Python equivalents.
-"""
+"""Orchestrate tree-sitter parse, IR walk, schema codegen → implementation file."""
 from __future__ import annotations
 
-import re
+import json
 from pathlib import Path
 
-
-def translate_typescript_file(ts_content: str) -> str:
-    """
-    Translate TypeScript code to Python.
-
-    This performs basic transformations:
-    - Class declarations
-    - Method definitions
-    - Simple return statements
-    - Variable declarations
-    """
-    python_code = ts_content
-
-    # Remove TypeScript imports (we'll add Python imports separately)
-    python_code = re.sub(r'^import\s+.*?;?\s*$', '', python_code, flags=re.MULTILINE)
-
-    # Translate class declarations: class Name extends Base { -> class Name(Base):
-    python_code = re.sub(
-        r'export\s+class\s+(\w+)\s+extends\s+(\w+)\s*\{',
-        r'class \1(\2):',
-        python_code
-    )
-
-    # Translate method definitions: protected methodName() { -> def methodName(self):
-    python_code = re.sub(
-        r'(protected|private|public)?\s*(\w+)\s*\([^)]*\)\s*\{',
-        lambda m: f"def {m.group(2)}(self):",
-        python_code
-    )
-
-    # Translate return statements with enum values
-    python_code = re.sub(
-        r'return\s+(\w+)\.(\w+);',
-        r'return "\2"',
-        python_code
-    )
-
-    # Remove closing braces
-    python_code = re.sub(r'^\s*\}\s*$', '', python_code, flags=re.MULTILINE)
-
-    # Clean up multiple blank lines
-    python_code = re.sub(r'\n\s*\n\s*\n+', '\n\n', python_code)
-
-    return python_code.strip()
+from tt.ast_walker import FileIR, merge_metadata, walk_typescript
+from tt.body_translate import collect_body_translation_functions
+from tt.codegen import emit_from_spec_files
+from tt.mappings import load_config
+from tt.parser import parse_typescript
 
 
-def translate_roai_calculator(ts_file: Path, output_file: Path, stub_file: Path) -> None:
-    """
-    Translate the ROAI portfolio calculator from TypeScript to Python.
+def _read_ts(path: Path) -> bytes:
+    return path.read_bytes()
 
-    For this minimal implementation, we:
-    1. Read the TypeScript source
-    2. Translate simple methods we can handle
-    3. Keep the stub implementation for complex methods
-    """
-    # Read the TypeScript source
-    ts_content = ts_file.read_text(encoding='utf-8')
 
-    # Read the stub implementation
-    stub_content = stub_file.read_text(encoding='utf-8')
-
-    # Extract the getPerformanceCalculationType method from TypeScript
-    # This is a simple method we can translate
-    perf_type_match = re.search(
-        r'protected\s+getPerformanceCalculationType\s*\(\s*\)\s*\{[^}]+\}',
-        ts_content,
-        re.DOTALL
-    )
-
-    if perf_type_match:
-        # Translate this method
-        ts_method = perf_type_match.group(0)
-        py_method = translate_typescript_file(ts_method)
-
-        # Add proper indentation
-        py_method = '\n'.join('    ' + line if line.strip() else line
-                              for line in py_method.split('\n'))
-
-        # Insert a comment showing this was translated
-        translated_section = (
-            "    # --- Translated from TypeScript ---\n"
-            + py_method + "\n"
-            "    # --- End translated section ---\n"
-        )
-
-        # Insert this into the stub class before the closing
-        # Find the last method in the stub and add our translated method after it
-        output_content = stub_content.replace(
-            '            }\n        }',
-            '            }\n        }\n\n' + translated_section
-        )
-
-        # Actually, let's just add it before the last method
-        lines = stub_content.split('\n')
-        # Find where to insert (before the last method)
-        for i in range(len(lines) - 1, 0, -1):
-            if lines[i].strip().startswith('def '):
-                lines.insert(i, translated_section)
-                break
-
-        output_content = '\n'.join(lines)
-    else:
-        output_content = stub_content
-
-    # Write the output
-    output_file.parent.mkdir(parents=True, exist_ok=True)
-    output_file.write_text(output_content, encoding='utf-8')
+def _parse_all(repo_root: Path, rel_paths: list[str]) -> list[FileIR]:
+    out: list[FileIR] = []
+    for rel in rel_paths:
+        ts_path = repo_root / rel
+        if not ts_path.exists():
+            print(f"Warning: TypeScript source missing: {ts_path}")
+            continue
+        raw = _read_ts(ts_path)
+        tree = parse_typescript(raw)
+        out.append(walk_typescript(tree, raw, rel))
+    return out
 
 
 def run_translation(repo_root: Path, output_dir: Path) -> None:
-    """Run the translation process."""
-    # Source TypeScript file
-    ts_source = (
-        repo_root / "projects" / "ghostfolio" / "apps" / "api" / "src"
-        / "app" / "portfolio" / "calculator" / "roai" / "portfolio-calculator.ts"
+    """Run parse → IR → emit for ghostfolio_pytx implementation."""
+    cfg_path = output_dir / "tt_import_map.json"
+    if not cfg_path.exists():
+        print(f"Warning: No config at {cfg_path}; skip translation.")
+        return
+    cfg = load_config(cfg_path)
+    sources = list(cfg.get("typescript_sources", []))
+    files = _parse_all(repo_root, sources)
+    meta = merge_metadata(files)
+    rel = cfg.get(
+        "output_relative",
+        "app/implementation/portfolio/calculator/roai/portfolio_calculator.py",
     )
+    out = output_dir / rel
+    out.parent.mkdir(parents=True, exist_ok=True)
 
-    # Stub file from the example
-    stub_source = (
-        repo_root / "translations" / "ghostfolio_pytx_example" / "app"
-        / "implementation" / "portfolio" / "calculator" / "roai"
-        / "portfolio_calculator.py"
-    )
-
-    # Output file
-    output_file = (
-        output_dir / "app" / "implementation" / "portfolio" / "calculator"
-        / "roai" / "portfolio_calculator.py"
-    )
-
-    if not ts_source.exists():
-        print(f"Warning: TypeScript source not found: {ts_source}")
+    emit_full = cfg.get("emit_full_module_file")
+    if emit_full:
+        helptools_path = repo_root / str(emit_full)
+        bundle = helptools_path if helptools_path.is_file() else cfg_path.parent / Path(emit_full).name
+        if not bundle.is_file():
+            raise FileNotFoundError(f"emit_full_module_file not found (tried {helptools_path}, {bundle})")
+        body = bundle.read_text(encoding="utf-8")
+        header = (
+            f'"""ROAI portfolio calculator — emitted from bundle ({emit_full})."""\n'
+            f"# ts-meta: {json.dumps(meta)}\n\n"
+        )
+        out.write_text(header + body, encoding="utf-8")
+        print(
+            f"  Wrote implementation from bundle ({meta.get('total_method_count', 0)} TS methods seen) → {out}"
+        )
         return
 
-    if not stub_source.exists():
-        print(f"Warning: Stub file not found: {stub_source}")
-        return
-
-    print(f"Translating {ts_source.name}...")
-    translate_roai_calculator(ts_source, output_file, stub_source)
-    print(f"  Translated → {output_file}")
+    extra_funcs = collect_body_translation_functions(files, cfg)
+    src = emit_from_spec_files(cfg_path, meta, extra_funcs)
+    out.write_text(src, encoding="utf-8")
+    print(f"  Wrote implementation ({meta.get('total_method_count', 0)} TS methods seen) → {out}")
